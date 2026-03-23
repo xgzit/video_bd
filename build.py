@@ -119,7 +119,7 @@ if IS_WINDOWS:
         print(f"✅ 安装包已生成: release/video_bd_Setup_v{version}.exe")
 
 elif IS_MACOS:
-    # ── macOS：.app zip ──
+    # ── macOS：zip ──
     step("生成 macOS zip")
     zip_name = f"video_bd_v{version}_macos.zip"
     zip_path = os.path.join(RELEASE, zip_name)
@@ -132,7 +132,23 @@ elif IS_MACOS:
                 arc_path = os.path.relpath(abs_path, os.path.dirname(DIST_DIR))
                 zf.write(abs_path, arc_path)
 
-    print(f"✅ macOS 包已生成: release/{zip_name}")
+    print(f"✅ macOS zip 已生成: release/{zip_name}")
+
+    # ── macOS：dmg ──
+    step("生成 macOS dmg")
+    dmg_name = f"video_bd_v{version}_macos.dmg"
+    dmg_path = os.path.join(RELEASE, dmg_name)
+    result = subprocess.run([
+        'hdiutil', 'create',
+        '-volname', 'video_bd',
+        '-srcfolder', DIST_DIR,
+        '-ov', '-format', 'UDZO',
+        dmg_path
+    ], cwd=ROOT)
+    if result.returncode != 0:
+        print("⚠️  dmg 生成失败，跳过")
+    else:
+        print(f"✅ macOS dmg 已生成: release/{dmg_name}")
 
 else:
     # ── Linux：tar.gz ──
