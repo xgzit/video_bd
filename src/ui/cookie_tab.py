@@ -1,343 +1,352 @@
 """
-YouTube Downloader Cookie标签页模块
-负责创建和管理Cookie标签页界面
+youtobe_bd Cookie 标签页模块
+支持从浏览器自动提取（通用多站点）和手动导入 Netscape 文件
 """
 import os
-import sys
+import tempfile
 from typing import Optional
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextEdit, QMessageBox, QGroupBox, QStatusBar,
-    QFileDialog
+    QFileDialog, QComboBox, QFrame, QApplication, QSizePolicy
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt5.QtGui import QDesktopServices
 
-# 使用绝对导入
 from src.core.cookie_manager import CookieManager
 from src.utils.logger import LoggerManager
-from src.ui.components.cookie_login_dialog import CookieLoginDialog, is_webengine_available
+from src.utils.platform import get_yt_dlp_path, run_subprocess
+
+
+# yt-dlp 支持的浏览器列表
+BROWSERS = ['chrome', 'firefox', 'edge', 'safari', 'brave', 'opera', 'chromium', 'vivaldi']
+
+
+class BrowserExtractThread(QThread):
+    """后台执行 yt-dlp --cookies-from-browser 提取 Cookie"""
+
+    finished = pyqtSignal(bool, str, str)   # (success, cookie_file, message)
+
+    def __init__(self, browser: str, output_path: str):
+        super().__init__()
+        self._browser = browser
+        self._output = output_path
+
+    def run(self):
+        yt_dlp = str(get_yt_dlp_path())
+        if not os.path.exists(yt_dlp):
+            self.finished.emit(False, '', 'yt-dlp 未安装，请先在「版本」页下载')
+            return
+
+        # yt-dlp --cookies-from-browser <browser> --skip-download --cookies <file> <url>
+        # 使用一个稳定的公开页面触发 cookie 提取
+        cmd = [
+            yt_dlp,
+            '--cookies-from-browser', self._browser,
+            '--skip-download',
+            '--cookies', self._output,
+            '--quiet',
+            'https://www.youtube.com',
+        ]
+        try:
+            result = run_subprocess(cmd, check=False, timeout=30)
+            if os.path.exists(self._output) and os.path.getsize(self._output) > 0:
+                self.finished.emit(True, self._output, '')
+            else:
+                err = (result.stderr or result.stdout or '').strip()[:200]
+                self.finished.emit(False, '', err or f'未能从 {self._browser} 提取到 Cookie，请确认浏览器已安装且已登录目标网站')
+        except Exception as e:
+            self.finished.emit(False, '', str(e))
+
 
 class CookieTab(QWidget):
-    """Cookie标签页类"""
-    
+    """Cookie 管理标签页"""
+
     def __init__(self, status_bar: QStatusBar = None):
-        """
-        初始化Cookie标签页
-        
-        Args:
-            status_bar: 状态栏
-        """
         super().__init__()
-        
-        # 初始化日志
         self.logger = LoggerManager().get_logger()
         self.status_bar = status_bar
-        
-        # 初始化Cookie管理器
         self.cookie_manager = CookieManager()
-        
-        # 添加Cookie状态显示
-        self.cookie_status = "未使用"  # 添加状态属性
-        
-        # 登录对话框引用
-        self.login_dialog: Optional[CookieLoginDialog] = None
-        
-        # 初始化UI
-        self.init_ui()
-        
-        # 记录日志
-        self.logger.info("Cookie标签页初始化完成")
-    
-    def init_ui(self):
-        """初始化UI"""
-        # 创建主布局
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
-        
-        # 创建Cookie状态区域
-        status_group = QGroupBox("Cookie状态")
+        self._extract_thread: Optional[BrowserExtractThread] = None
+        self._init_ui()
+        self.logger.info("Cookie 标签页初始化完成")
+
+    # ──────────────────────────────────────────────────────────
+    #  UI
+    # ──────────────────────────────────────────────────────────
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        # ── 状态区 ──
+        status_group = QGroupBox("Cookie 状态")
         status_layout = QVBoxLayout(status_group)
-        
-        # 状态显示
+
         self.status_label = QLabel("当前状态：未使用")
-        self.status_label.setWordWrap(True)  # 允许文本换行
-        self.status_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # 文本左对齐
-        self.status_label.setTextFormat(Qt.RichText)  # 启用富文本格式
+        self.status_label.setWordWrap(True)
+        self.status_label.setTextFormat(Qt.RichText)
         status_layout.addWidget(self.status_label)
-        
-        # 按钮水平布局
-        status_button_layout = QHBoxLayout()
 
-        # 验证按钮
-        self.verify_button = QPushButton("验证Cookie")
-        self.verify_button.clicked.connect(self.verify_cookies)
-        status_button_layout.addWidget(self.verify_button)
+        btn_row = QHBoxLayout()
+        self.verify_button = QPushButton("验证文件格式")
+        self.verify_button.clicked.connect(self._verify_cookie)
+        btn_row.addWidget(self.verify_button)
 
-        # 清除按钮
-        self.clear_button = QPushButton("清除Cookie")
-        self.clear_button.clicked.connect(self.clear_loaded_cookie)
-        status_button_layout.addWidget(self.clear_button)
+        self.clear_button = QPushButton("清除 Cookie")
+        self.clear_button.setObjectName("secondaryButton")
+        self.clear_button.clicked.connect(self._clear_cookie)
+        btn_row.addWidget(self.clear_button)
+        btn_row.addStretch()
+        status_layout.addLayout(btn_row)
+        layout.addWidget(status_group)
 
-        status_layout.addLayout(status_button_layout)
-        
-        # 添加状态区域到主布局
-        main_layout.addWidget(status_group)
-        
-        # 创建Cookie文件区域
-        cookie_file_group = QGroupBox("Cookie文件")
-        cookie_file_layout = QVBoxLayout(cookie_file_group)
-        
-        # Cookie文件路径输入框
-        file_path_layout = QHBoxLayout()
+        # ── 从浏览器提取 ──
+        extract_group = QGroupBox("从浏览器自动提取（推荐）")
+        extract_layout = QVBoxLayout(extract_group)
+
+        desc = QLabel(
+            "使用 yt-dlp 从本地浏览器提取 Cookie，支持所有站点。\n"
+            "⚠️ 提取前请先完全关闭对应浏览器（含后台进程），否则数据库锁定将导致失败。\n"
+            "⚠️ Chrome 127+ 启用了 App-Bound 加密，建议改用 Firefox 或 Edge 提取。"
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #64748B; font-size: 9pt;")
+        extract_layout.addWidget(desc)
+
+        browser_row = QHBoxLayout()
+        browser_row.addWidget(QLabel("浏览器："))
+        self.browser_combo = QComboBox()
+        self.browser_combo.addItems(BROWSERS)
+        browser_row.addWidget(self.browser_combo)
+
+        self.extract_button = QPushButton("提取 Cookie")
+        self.extract_button.clicked.connect(self._extract_from_browser)
+        browser_row.addWidget(self.extract_button)
+        browser_row.addStretch()
+        extract_layout.addLayout(browser_row)
+        layout.addWidget(extract_group)
+
+        # ── 手动导入 ──
+        file_group = QGroupBox("手动导入 Cookie 文件")
+        file_layout = QVBoxLayout(file_group)
+
+        file_desc = QLabel("支持 Netscape 格式的 Cookie 文件，可通过浏览器插件导出：")
+        file_desc.setStyleSheet("color: #64748B; font-size: 9pt;")
+        file_layout.addWidget(file_desc)
+
+        # 插件名称行：可复制的只读输入框 + 两个快捷按钮
+        plugin_row = QHBoxLayout()
+        self.plugin_name_edit = QLineEdit("Get cookies.txt LOCALLY")
+        self.plugin_name_edit.setReadOnly(True)
+        self.plugin_name_edit.setStyleSheet("")  # 继承全局 QSS，与其他输入框保持一致
+        self.plugin_name_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        plugin_row.addWidget(self.plugin_name_edit)
+
+        copy_name_btn = QPushButton("复制名称")
+        copy_name_btn.setObjectName("secondaryButton")
+        copy_name_btn.setMinimumWidth(76)
+        copy_name_btn.setMaximumWidth(100)
+        copy_name_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        copy_name_btn.setToolTip("复制插件名称到剪贴板，可直接在浏览器扩展商店搜索")
+        copy_name_btn.clicked.connect(self._copy_plugin_name)
+        plugin_row.addWidget(copy_name_btn)
+
+        open_store_btn = QPushButton("去下载")
+        open_store_btn.setObjectName("secondaryButton")
+        open_store_btn.setMinimumWidth(72)
+        open_store_btn.setMaximumWidth(100)
+        open_store_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        open_store_btn.setToolTip("在浏览器中打开 Chrome Web Store 插件页面")
+        open_store_btn.clicked.connect(self._open_plugin_store)
+        plugin_row.addWidget(open_store_btn)
+
+        file_layout.addLayout(plugin_row)
+
+        # Cookie 文件路径行
+        path_row = QHBoxLayout()
         self.cookie_file_input = QLineEdit()
-        self.cookie_file_input.setPlaceholderText("")  # 清空占位符
-        file_path_layout.addWidget(self.cookie_file_input)
-        
-        # 浏览按钮
-        self.browse_button = QPushButton("浏览...")
-        self.browse_button.clicked.connect(self.browse_cookie_file)
-        file_path_layout.addWidget(self.browse_button)
-        
-        cookie_file_layout.addLayout(file_path_layout)
-        
-        # 创建按钮布局
-        button_layout = QHBoxLayout()
-        
-        # 登录获取按钮
-        self.login_button = QPushButton("登录获取 Cookie")
-        self.login_button.setStyleSheet("""
-            QPushButton {
-                padding: 8px 20px;
-                font-size: 13px;
-                font-weight: bold;
-                background-color: #007bff;
-                color: white;
-                border: none;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #0069d9;
-            }
-            QPushButton:pressed {
-                background-color: #0062cc;
-            }
-            QPushButton:disabled {
-                background-color: #6c757d;
-            }
-        """)
-        self.login_button.clicked.connect(self.open_login_dialog)
-        button_layout.addWidget(self.login_button)
-        
-        # 添加说明文字
-        note_label = QLabel("点击按钮将打开内置浏览器，请登录您的 Google 账户")
-        note_label.setStyleSheet("color: #666; font-size: 10px;")
-        note_label.setWordWrap(True)
-        cookie_file_layout.addWidget(note_label)
-        
-        # 检查 WebEngine 是否可用
-        if not is_webengine_available():
-            self.login_button.setEnabled(False)
-            self.login_button.setToolTip("需要安装 PyQtWebEngine")
-            note_label.setText("⚠️ 请先安装 PyQtWebEngine: pip install PyQtWebEngine")
-            note_label.setStyleSheet("color: #e74c3c; font-size: 10px;")
-        
-        
-        cookie_file_layout.addLayout(button_layout)
-        
-        # 添加Cookie文件区域到主布局
-        main_layout.addWidget(cookie_file_group)
-        
-        # 添加Cookie说明文字
-        note_label = QLabel("⚠️ Cookie 使用说明：")
-        note_label.setStyleSheet("color: #e67e22; font-size: 12px; font-weight: bold; margin: 10px 0;")
-        main_layout.addWidget(note_label)
-        
-        note_content = QLabel("Cookie 不是必需的，仅在以下情况需要：\n1. 下载会员专属视频\n2. 下载年龄限制视频\n3. 下载私人视频")
-        note_content.setStyleSheet("color: #e67e22; font-size: 11px; margin: 5px 0 15px 0;")
-        note_content.setWordWrap(True)
-        main_layout.addWidget(note_content)
-        
-        # 创建Cookie内容区域
-        cookie_content_group = QGroupBox("Cookie内容")
-        cookie_content_layout = QVBoxLayout(cookie_content_group)
-        
-        # Cookie内容显示
+        self.cookie_file_input.setPlaceholderText("Cookie 文件路径…")
+        self.cookie_file_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        path_row.addWidget(self.cookie_file_input)
+
+        browse_btn = QPushButton("浏览…")
+        browse_btn.setObjectName("secondaryButton")
+        browse_btn.setMinimumWidth(64)
+        browse_btn.setMaximumWidth(90)
+        browse_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        browse_btn.clicked.connect(self._browse_cookie_file)
+        path_row.addWidget(browse_btn)
+        file_layout.addLayout(path_row)
+        layout.addWidget(file_group)
+
+        # ── 分隔线 ──
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #E2E8F0;")
+        layout.addWidget(line)
+
+        # ── 使用说明 ──
+        note = QLabel(
+            "Cookie 不是必需的，仅在以下情况需要：\n"
+            "  • 下载会员专属内容\n"
+            "  • 下载年龄限制视频\n"
+            "  • 下载需要登录才能查看的私人内容"
+        )
+        note.setStyleSheet("color: #64748B; font-size: 9pt;")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        # ── Cookie 内容预览 ──
+        preview_group = QGroupBox("Cookie 文件预览")
+        preview_layout = QVBoxLayout(preview_group)
         self.cookie_content = QTextEdit()
         self.cookie_content.setReadOnly(True)
-        self.cookie_content.setPlaceholderText("Cookie内容将显示在这里")
-        cookie_content_layout.addWidget(self.cookie_content)
-        
-        # 添加Cookie内容区域到主布局
-        main_layout.addWidget(cookie_content_group)
-        
-        # 添加弹性空间
-        main_layout.addStretch()
-    
-    def clear_loaded_cookie(self):
-        """清除已加载的Cookie信息，但不删除文件。"""
-        # 1. 清空UI组件
+        self.cookie_content.setPlaceholderText("加载 Cookie 文件后将在此显示内容")
+        self.cookie_content.setMaximumHeight(140)
+        preview_layout.addWidget(self.cookie_content)
+        layout.addWidget(preview_group)
+
+        layout.addStretch()
+
+    # ──────────────────────────────────────────────────────────
+    #  事件处理
+    # ──────────────────────────────────────────────────────────
+
+    def _extract_from_browser(self):
+        """调用 yt-dlp 从浏览器提取 Cookie"""
+        browser = self.browser_combo.currentText()
+        output_dir = os.path.dirname(self.cookie_file_input.text() or '') or tempfile.gettempdir()
+        output_path = os.path.join(output_dir, f'cookies_{browser}.txt')
+
+        self.extract_button.setEnabled(False)
+        self.extract_button.setText("提取中…")
+        self._update_status_bar(f"正在从 {browser} 提取 Cookie…")
+
+        self._extract_thread = BrowserExtractThread(browser, output_path)
+        self._extract_thread.finished.connect(self._on_extract_finished)
+        self._extract_thread.start()
+
+    def _on_extract_finished(self, success: bool, cookie_file: str, message: str):
+        self.extract_button.setEnabled(True)
+        self.extract_button.setText("提取 Cookie")
+
+        if success:
+            self.cookie_file_input.setText(cookie_file)
+            self._load_cookie_preview(cookie_file)
+            self._set_status(True, f"已从 {self.browser_combo.currentText()} 提取 Cookie")
+            self._update_status_bar("Cookie 提取成功")
+            QMessageBox.information(self, "成功", f"Cookie 提取成功！\n文件：{cookie_file}")
+        else:
+            self._set_status(False, "提取失败")
+            self._update_status_bar("Cookie 提取失败")
+            # 识别常见错误，给出针对性提示
+            browser = self.browser_combo.currentText()
+            msg = message or ""
+            if "Could not copy" in msg and "cookie database" in msg:
+                hint = (
+                    f"无法读取 {browser} 的 Cookie 数据库，浏览器正在运行时会锁定该文件。\n\n"
+                    f"解决方法：\n"
+                    f"1. 完全退出 {browser}（包括系统托盘/后台进程）\n"
+                    f"2. 再次点击【提取 Cookie】\n\n"
+                    f"或改用「手动导入」：在浏览器中安装插件\n"
+                    f"Get cookies.txt LOCALLY，导出后手动选择文件。"
+                )
+                QMessageBox.warning(self, "浏览器未关闭", hint)
+            elif "DPAPI" in msg or "decrypt" in msg.lower() or "App-Bound" in msg:
+                hint = (
+                    "Chrome 127+ 启用了 App-Bound 加密，yt-dlp 暂无法直接解密其 Cookie。\n\n"
+                    "推荐解决方案：\n"
+                    "1. 切换为 Firefox 或 Edge 提取（下拉框选择对应浏览器）\n"
+                    "2. 或在 Chrome 中安装插件「Get cookies.txt LOCALLY」\n"
+                    "   手动导出后使用「手动导入」功能加载文件"
+                )
+                QMessageBox.warning(self, "Chrome 加密限制", hint)
+            else:
+                QMessageBox.warning(self, "提取失败", msg or "未能提取到 Cookie")
+
+    def _copy_plugin_name(self):
+        """复制插件名称到剪贴板"""
+        QApplication.clipboard().setText(self.plugin_name_edit.text())
+        self._update_status_bar("插件名称已复制到剪贴板")
+
+    def _open_plugin_store(self):
+        """在浏览器中打开插件下载页"""
+        # Chrome Web Store 页面
+        url = "https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
+        QDesktopServices.openUrl(QUrl(url))
+        self._update_status_bar("已在浏览器中打开插件下载页")
+
+    def _browse_cookie_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 Cookie 文件", "",
+            "Cookie 文件 (*.txt);;所有文件 (*.*)"
+        )
+        if path:
+            self.cookie_file_input.setText(path)
+            self._load_cookie_preview(path)
+
+    def _verify_cookie(self):
+        """验证 Cookie 文件格式是否为 Netscape 格式"""
+        path = self.cookie_file_input.text().strip()
+        if not path:
+            QMessageBox.warning(self, "提示", "请先选择或提取 Cookie 文件")
+            return
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "提示", "文件不存在")
+            return
+
+        ok, msg = self.cookie_manager.validate_cookie_file(path)
+        if ok:
+            self._set_status(True, "Cookie 文件格式有效（Netscape 格式）")
+            self._update_status_bar("Cookie 验证通过")
+            QMessageBox.information(self, "验证通过", "Cookie 文件格式正确，可以正常使用。")
+        else:
+            self._set_status(False, f"格式无效：{msg}")
+            self._update_status_bar("Cookie 验证失败")
+            QMessageBox.warning(self, "验证失败", msg)
+
+    def _clear_cookie(self):
         self.cookie_file_input.clear()
         self.cookie_content.clear()
-        
-        # 2. 重置状态标签
-        self.status_label.setText("当前状态：未使用")
-        
-        # 3. 更新内部和外部状态
-        self.update_cookie_status(False)
-        self.update_status_message("已清除加载的 Cookie")
-        
-        # 4. 通知用户
-        QMessageBox.information(self, "操作成功", "已清除加载的 Cookie 信息。")
-        self.logger.info("用户清除了已加载的 Cookie 信息。")
+        self._set_status(False, "未使用")
+        self._update_status_bar("已清除 Cookie")
+        QMessageBox.information(self, "操作成功", "已清除 Cookie 信息。")
 
-    def verify_cookies(self):
-        """验证Cookie"""
-        cookie_file = self.cookie_file_input.text()
-        
-        if not cookie_file:
-            QMessageBox.warning(self, "警告", "请先选择或获取Cookie文件")
-            return
-        
-        if not os.path.exists(cookie_file):
-            QMessageBox.warning(self, "警告", "Cookie文件不存在")
-            return
-        
+    def _load_cookie_preview(self, path: str):
+        """加载并预览 Cookie 文件内容"""
         try:
-            # 导入验证函数
-            from src.core.cookie.check_cookies import verify_cookie
-            is_valid, message, user_id, username = verify_cookie(cookie_file)
-            
-            if is_valid:
-                self.update_cookie_status(True)
-                # 使用HTML格式化状态文本
-                status_text = f"""
-                <div style='margin: 10px 0;'>
-                    <p style='color: #2ecc71; font-weight: bold; margin-bottom: 10px;'>Cookie验证成功</p>
-                    <p style='margin: 5px 0;'><b>用户ID:</b> <span style='color: #3498db;'>{user_id}</span></p>
-                    <p style='margin: 5px 0;'><b>用户名:</b> <span style='color: #3498db;'>@{username}</span></p>
-                </div>
-                """
-                self.status_label.setText(status_text)
-                self.update_status_message("Cookie验证成功")
-                QMessageBox.information(self, "成功", f"Cookie验证成功！\n\n用户ID: {user_id}\n用户名: @{username}")
-            else:
-                self.update_cookie_status(False)
-                self.update_status_message(f"Cookie验证失败: {message}")
-                QMessageBox.warning(self, "警告", f"Cookie验证失败:\n{message}")
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read(4096)   # 只预览前 4KB
+            if len(content) == 4096:
+                content += '\n… (文件较大，仅显示前 4KB)'
+            self.cookie_content.setPlainText(content)
+            self._update_status_bar("Cookie 文件已加载")
         except Exception as e:
-            self.logger.error(f"验证Cookie失败: {str(e)}")
-            QMessageBox.critical(self, "错误", f"验证Cookie失败:\n{str(e)}")
-            self.update_status_message("Cookie验证失败")
-    
-    def open_login_dialog(self):
-        """打开内置浏览器登录对话框"""
-        try:
-            if not is_webengine_available():
-                QMessageBox.critical(
-                    self, 
-                    "错误", 
-                    "PyQtWebEngine 未安装。\n\n请运行以下命令安装：\npip install PyQtWebEngine"
-                )
-                return
-            
-            self.logger.info("打开登录对话框...")
-            self.update_status_message("正在打开登录窗口...")
-            
-            # 创建登录对话框
-            self.login_dialog = CookieLoginDialog(self)
-            self.login_dialog.login_finished.connect(self.handle_login_result)
-            
-            # 开始登录流程
-            self.login_dialog.start_login()
-            
-            # 显示对话框（模态）
-            self.login_dialog.exec_()
-            
-        except Exception as e:
-            self.logger.error(f"打开登录对话框失败: {str(e)}", exc_info=True)
-            QMessageBox.critical(self, "错误", f"打开登录对话框失败:\n{str(e)}")
-            self.update_status_message("打开登录对话框失败")
-    
-    def handle_login_result(self, success: bool, cookie_file: str, message: str):
-        """处理登录结果"""
-        try:
-            self.logger.info(f"收到登录结果: success={success}, message={message}")
-            
-            if success and cookie_file and os.path.exists(cookie_file):
-                # 加载生成的 cookie 文件
-                self.logger.debug(f"设置Cookie文件路径: {cookie_file}")
-                self.cookie_file_input.setText(cookie_file)
-                self.load_cookie_content(cookie_file)
-                self.update_status_message("Cookie 获取成功")
-                self.logger.info("Cookie 获取成功并已加载")
-                
-                # 显示成功消息
-                QMessageBox.information(
-                    self, 
-                    "成功", 
-                    f"Cookie 获取成功！\n\n文件已保存至：{cookie_file}\n\n建议点击「验证Cookie」按钮验证是否有效。"
-                )
-            else:
-                self.logger.warning(f"Cookie 获取失败: {message}")
-                self.update_status_message(f"Cookie 获取失败: {message}")
-                
-        except Exception as e:
-            self.logger.error(f"处理登录结果失败: {str(e)}", exc_info=True)
-            QMessageBox.critical(self, "错误", f"处理登录结果失败:\n{str(e)}")
-            self.update_status_message("处理登录结果失败")
-    
-    def browse_cookie_file(self):
-        """浏览Cookie文件"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择Cookie文件",
-            "",
-            "Netscape Cookie文件 (*.txt);;所有文件 (*.*)"
+            self.logger.error(f"加载 Cookie 文件失败: {e}")
+            QMessageBox.critical(self, "错误", f"加载文件失败：{e}")
+
+    # ──────────────────────────────────────────────────────────
+    #  辅助
+    # ──────────────────────────────────────────────────────────
+
+    def _set_status(self, active: bool, message: str):
+        color = '#10B981' if active else '#64748B'
+        self.status_label.setText(
+            f'<span style="color:{color}; font-weight:600;">当前状态：{message}</span>'
         )
-        
-        if file_path:
-            self.cookie_file_input.setText(file_path)
-            self.load_cookie_content(file_path)
-    
-    def load_cookie_content(self, file_path: str):
-        """加载Cookie内容"""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                self.cookie_content.setText(content)
-                self.update_status_message("Cookie文件加载成功")
-        except Exception as e:
-            self.logger.error(f"加载Cookie文件失败: {str(e)}")
-            QMessageBox.critical(self, "错误", f"加载Cookie文件失败:\n{str(e)}")
-            self.update_status_message("Cookie文件加载失败")
-    
-    def update_status_message(self, message: str):
-        """更新状态栏消息"""
+
+    def _update_status_bar(self, msg: str):
         if self.status_bar:
-            self.status_bar.showMessage(message)
-    
-    def update_cookie_status(self, is_using: bool):
-        """更新Cookie使用状态"""
-        self.cookie_status = "使用中" if is_using else "未使用"
-        
-        # 设置状态文本样式
-        if is_using:
-            status_style = "color: #2ecc71; font-weight: bold;"  # 绿色
-        else:
-            status_style = "color: #e74c3c; font-weight: bold;"  # 红色
-        
-        self.status_label.setText(f'<span style="{status_style}">当前状态：{self.cookie_status}</span>')
-        
-        # 更新状态栏
-        self.update_status_message(f"Cookie状态已更新：{self.cookie_status}")
-    
+            self.status_bar.showMessage(msg)
+
+    # ── 公开接口（供 multi_download_tab 调用） ──
+
     def get_cookie_file(self) -> str:
-        """获取当前Cookie文件路径"""
-        return self.cookie_file_input.text()
-    
+        return self.cookie_file_input.text().strip()
+
     def is_cookie_available(self) -> bool:
-        """检查Cookie是否可用"""
-        return bool(self.cookie_file_input.text() and os.path.exists(self.cookie_file_input.text())) 
+        path = self.get_cookie_file()
+        return bool(path and os.path.exists(path))

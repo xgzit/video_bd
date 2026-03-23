@@ -1,5 +1,5 @@
 """
-YouTube Downloader 的日志管理模块
+video_bd 的日志管理模块
 负责处理日志记录功能
 """
 import os
@@ -40,11 +40,11 @@ class LoggerManager:
         # 设置日志文件路径
         self.log_file = log_file or os.path.join(
             app_data_dir, 
-            f"youtube_downloader_{datetime.now().strftime('%Y%m%d')}.log"
+            f"video_bd_{datetime.now().strftime('%Y%m%d')}.log"
         )
         
         # 创建日志记录器
-        self.logger = logging.getLogger('youtube_downloader')
+        self.logger = logging.getLogger('video_bd')
         self.logger.setLevel(log_level)
         
         # 清除现有处理器

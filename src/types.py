@@ -1,5 +1,5 @@
 """
-YouTube Downloader 类型定义模块
+youtobe_bd 类型定义模块
 集中定义所有类型提示，包括 TypedDict、Protocol 和类型别名
 """
 from typing import (

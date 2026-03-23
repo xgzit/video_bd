@@ -232,11 +232,7 @@ class CookieManager:
                 if not first_line.startswith('# Netscape HTTP Cookie File'):
                     return False, "Cookie 文件格式不正確，應為 Netscape HTTP Cookie 格式"
                 
-                # 檢查是否包含 youtube.com 的 Cookie
-                content = f.read()
-                if 'youtube.com' not in content:
-                    return False, "Cookie 文件中未找到 YouTube 相關的 Cookie"
-            
+
             return True, ""
         except Exception as e:
             return False, f"讀取 Cookie 文件時發生錯誤: {str(e)}"

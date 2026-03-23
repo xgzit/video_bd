@@ -1,82 +1,156 @@
 """
-打包脚本，用于生成可执行文件
+一键构建脚本（跨平台）
+Windows  → 绿色版 zip + 安装版 Setup.exe（需要 Inno Setup 6）
+macOS    → .app 压缩包 zip
+Linux    → tar.gz 压缩包
 """
 import os
 import sys
+import json
 import shutil
 import subprocess
-import platform
+import zipfile
+import tarfile
 
-def build_exe():
-    """构建可执行文件"""
-    print("开始构建可执行文件...")
-    
-    # 清理旧的构建文件
-    if os.path.exists("build"):
-        shutil.rmtree("build")
-    if os.path.exists("dist"):
-        shutil.rmtree("dist")
-    
-    # 添加项目根目录到 Python 路径
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, current_dir)
-    
-    # 根据操作系统选择路径分隔符
-    if platform.system() == "Windows":
-        sep = ";"
+IS_WINDOWS = sys.platform == 'win32'
+IS_MACOS   = sys.platform == 'darwin'
+IS_LINUX   = sys.platform.startswith('linux')
+
+ROOT      = os.path.dirname(os.path.abspath(__file__))
+SPEC      = os.path.join(ROOT, "video_bd.spec")
+DIST_BASE = os.path.join(ROOT, "dist")
+RELEASE   = os.path.join(DIST_BASE, "release")
+ISS       = os.path.join(ROOT, "installer.iss")
+
+# macOS 产物是 .app bundle；其余平台是同名目录
+if IS_MACOS:
+    DIST_DIR = os.path.join(DIST_BASE, "build", "video_bd.app")
+else:
+    DIST_DIR = os.path.join(DIST_BASE, "build", "video_bd")
+
+ISCC_CANDIDATES = [
+    r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    r"C:\Program Files\Inno Setup 6\ISCC.exe",
+]
+
+
+def get_version():
+    config = os.path.join(ROOT, "src", "config", "config.json")
+    with open(config, encoding="utf-8") as f:
+        return json.load(f)["software_version"]
+
+
+def step(msg):
+    print(f"\n{'='*50}")
+    print(f"  {msg}")
+    print('='*50)
+
+
+def find_iscc():
+    for path in ISCC_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+# ── 1. 清理旧产物 ─────────────────────────────────────────────
+step("清理旧构建产物")
+for p in [os.path.join(ROOT, "build"), DIST_BASE]:
+    if os.path.exists(p):
+        shutil.rmtree(p)
+        print(f"  已删除: {os.path.relpath(p, ROOT)}/")
+os.makedirs(RELEASE, exist_ok=True)
+
+
+# ── 2. PyInstaller 打包 ──────────────────────────────────────
+step("PyInstaller 打包")
+result = subprocess.run(
+    [sys.executable, "-m", "PyInstaller", "--noconfirm",
+     "--distpath", os.path.join(DIST_BASE, "build"),
+     "--workpath", os.path.join(DIST_BASE, "work"),
+     SPEC],
+    cwd=ROOT
+)
+if result.returncode != 0:
+    print("❌ PyInstaller 打包失败，终止构建")
+    sys.exit(1)
+print("✅ PyInstaller 打包完成")
+
+version = get_version()
+
+
+# ── 3. 打包产物 ───────────────────────────────────────────────
+if IS_WINDOWS:
+    # ── Windows：绿色版 zip ──
+    step("生成绿色版 zip（Windows）")
+    zip_name = f"video_bd_v{version}_windows_portable.zip"
+    zip_path = os.path.join(RELEASE, zip_name)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for root, dirs, files in os.walk(DIST_DIR):
+            dirs[:] = [d for d in dirs if d not in ["__pycache__"]]
+            for file in files:
+                abs_path = os.path.join(root, file)
+                arc_path = os.path.join(
+                    f"video_bd_v{version}",
+                    os.path.relpath(abs_path, DIST_DIR)
+                )
+                zf.write(abs_path, arc_path)
+
+    print(f"✅ 绿色版已生成: release/{zip_name}")
+
+    # ── Windows：Inno Setup 安装包 ──
+    step("编译安装包（Inno Setup）")
+    iscc = find_iscc()
+    if not iscc:
+        print("⚠️  未找到 Inno Setup，跳过安装包生成")
+        print("   请安装 Inno Setup 6：https://jrsoftware.org/isdl.php")
     else:
-        sep = ":"
-    
-    # 构建命令
-    cmd = [
-        "pyinstaller",
-        "--name=YouTube_Downloader",
-        "--windowed",  # 不显示控制台窗口
-        "--icon=resources/icons/app_icon.ico",
-        f"--add-data=resources{sep}resources",  # 添加资源文件
-        f"--add-data=src/config{sep}src/config",  # 添加配置文件
-        # PyQt5 核心模块
-        "--hidden-import=PyQt5",
-        "--hidden-import=PyQt5.QtCore",
-        "--hidden-import=PyQt5.QtGui",
-        "--hidden-import=PyQt5.QtWidgets",
-        "--hidden-import=PyQt5.QtWebEngineWidgets",
-        "--hidden-import=PyQt5.QtWebEngineCore",
-        "--hidden-import=PyQt5.sip",
-        # yt-dlp 相关
-        "--hidden-import=yt_dlp",
-        "--hidden-import=yt_dlp.extractor",
-        "--hidden-import=yt_dlp.downloader",
-        "--hidden-import=yt_dlp.postprocessor",
-        # 其他可能需要的模块
-        "--hidden-import=json",
-        "--hidden-import=urllib3",
-        "--hidden-import=requests",
-        "--hidden-import=certifi",
-        "--hidden-import=charset_normalizer",
-        "--hidden-import=idna",
-        "--hidden-import=pycryptodome",
-        "--hidden-import=websockets",
-        "--hidden-import=websocket",
-        "--hidden-import=selenium",
-        "--hidden-import=undetected_chromedriver",
-        # 收集所有子模块（避免遗漏）
-        "--collect-all=yt_dlp",
-        "--collect-all=PyQt5",
-        "--noconfirm",  # 不询问确认
-        "--clean",  # 清理临时文件
-        "--paths=.",  # 添加当前目录到 Python 路径
-        "src/main.py"
-    ]
-    
-    # 执行构建
-    try:
-        subprocess.run(cmd, check=True)
-        print("可执行文件构建完成！")
-        print(f"输出目录: {os.path.join(current_dir, 'dist', 'YouTube_Downloader')}")
-    except subprocess.CalledProcessError as e:
-        print(f"构建失败: {e}")
-        sys.exit(1)
+        result = subprocess.run([iscc, f"/O{RELEASE}", ISS], cwd=ROOT)
+        if result.returncode != 0:
+            print("❌ 安装包编译失败")
+            sys.exit(1)
+        print(f"✅ 安装包已生成: release/video_bd_Setup_v{version}.exe")
 
-if __name__ == "__main__":
-    build_exe() 
+elif IS_MACOS:
+    # ── macOS：.app zip ──
+    step("生成 macOS zip")
+    zip_name = f"video_bd_v{version}_macos.zip"
+    zip_path = os.path.join(RELEASE, zip_name)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for root, dirs, files in os.walk(DIST_DIR):
+            dirs[:] = [d for d in dirs if d not in ["__pycache__"]]
+            for file in files:
+                abs_path = os.path.join(root, file)
+                arc_path = os.path.relpath(abs_path, os.path.dirname(DIST_DIR))
+                zf.write(abs_path, arc_path)
+
+    print(f"✅ macOS 包已生成: release/{zip_name}")
+
+else:
+    # ── Linux：tar.gz ──
+    step("生成 Linux tar.gz")
+    tar_name = f"video_bd_v{version}_linux.tar.gz"
+    tar_path = os.path.join(RELEASE, tar_name)
+
+    with tarfile.open(tar_path, "w:gz") as tf:
+        tf.add(DIST_DIR, arcname=f"video_bd_v{version}")
+
+    print(f"✅ Linux 包已生成: release/{tar_name}")
+
+
+# ── 4. 清理临时目录 ───────────────────────────────────────────
+step("清理临时目录")
+work_dir = os.path.join(DIST_BASE, "work")
+if os.path.exists(work_dir):
+    shutil.rmtree(work_dir)
+    print("  已删除: dist/work/")
+
+
+# ── 完成 ──────────────────────────────────────────────────────
+step("构建完成")
+print(f"\n📦 产物目录: dist/release/")
+for f in sorted(os.listdir(RELEASE)):
+    size = os.path.getsize(os.path.join(RELEASE, f)) / 1024 / 1024
+    print(f"   {f}  ({size:.1f} MB)")

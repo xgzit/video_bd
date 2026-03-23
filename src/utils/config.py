@@ -1,5 +1,5 @@
 """
-YouTube Downloader 的配置管理模块
+youtobe_bd 的配置管理模块
 负责处理应用程序配置和设置
 """
 import os

@@ -1,5 +1,5 @@
 """
-YouTube Downloader UI 组件模块
+youtobe_bd UI 组件模块
 提供可复用的 UI 组件
 """
 from src.ui.components.url_input import UrlInputWidget

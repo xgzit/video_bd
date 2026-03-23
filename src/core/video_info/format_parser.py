@@ -39,7 +39,7 @@ class FormatParser:
             # 检查格式类型
             vcodec = fmt.get('vcodec', 'none')
             acodec = fmt.get('acodec', 'none')
-            format_note = fmt.get('format_note', '').lower()
+            format_note = (fmt.get('format_note') or '').lower()
             
             # 检查是否是无效格式（如 storyboard、mhtml 等）
             ext = fmt.get('ext', '').lower()

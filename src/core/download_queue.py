@@ -1,5 +1,5 @@
 """
-YouTube Downloader 下载队列管理模块
+youtobe_bd 下载队列管理模块
 提供任务排队、优先级和并发控制功能
 """
 import threading
@@ -34,6 +34,7 @@ class QueuedTask:
     no_playlist: bool = field(compare=False, default=True)
     proxy_url: Optional[str] = field(compare=False, default=None)
     status: DownloadStatus = field(compare=False, default=DownloadStatus.PENDING)
+    overwrite: bool = field(compare=False, default=False)
     progress: float = field(compare=False, default=0.0)
     speed: str = field(compare=False, default="")
     eta: str = field(compare=False, default="")

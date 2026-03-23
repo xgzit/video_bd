@@ -1,5 +1,5 @@
 """
-YouTube Downloader 进度显示组件
+youtobe_bd 进度显示组件
 提供下载进度和状态显示功能
 """
 from typing import Optional

@@ -1,5 +1,5 @@
 """
-YouTube Downloader 多视频下载标签页模块
+youtobe_bd 多视频下载标签页模块
 支持批量URL输入、播放列表解析和队列管理
 """
 import os
@@ -12,7 +12,8 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QTextEdit,
     QProgressBar, QFileDialog, QComboBox, QMessageBox, QGroupBox,
     QApplication, QStatusBar, QCheckBox, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QMenu, QAction, QSplitter
+    QHeaderView, QAbstractItemView, QMenu, QAction, QSplitter, QDialog, QFrame,
+    QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QIcon, QColor, QBrush
@@ -56,81 +57,106 @@ class BatchVideoInfoThread(QThread):
     
     def run(self):
         """执行批量视频信息获取"""
-        # 首先展开所有播放列表
+        # ── 阶段一：展开播放列表/频道，失败时静默回退到单视频处理 ──
         expanded_urls = []
-        
+
         for url in self.urls:
             if self.is_cancelled:
                 break
-            
-            # 等待暂停解除
             self._wait_if_paused()
             if self.is_cancelled:
                 break
-            
-            # 检查是否为播放列表
-            if self.video_info_parser.is_playlist_url(url):
-                self.progress_updated.emit(0, 0, f"正在展开播放列表: {url[:50]}...")
+
+            is_playlist = self.video_info_parser.is_playlist_url(url)
+            is_channel  = self.video_info_parser.is_channel_url(url)
+
+            if is_playlist or is_channel:
+                label = "播放列表" if is_playlist else "频道"
+                self.progress_updated.emit(0, 0, f"正在展开{label}: {url[:50]}...")
+                expand_fn = (self.video_info_parser.get_playlist_videos if is_playlist
+                             else self.video_info_parser.get_channel_videos)
                 try:
-                    playlist_videos = self.video_info_parser.get_playlist_videos(
-                        url, self.use_cookies, self.cookies_file, self.proxy_url
-                    )
-                    if playlist_videos:
-                        self.logger.info(f"播放列表展开成功，共 {len(playlist_videos)} 个视频")
-                        self.playlist_expanded.emit(url, len(playlist_videos))
-                        for video in playlist_videos:
-                            expanded_urls.append(video['url'])
-                    else:
-                        # 如果播放列表为空，尝试作为单个视频处理
-                        expanded_urls.append(url)
+                    videos = expand_fn(url, self.use_cookies, self.cookies_file, self.proxy_url)
+                    if videos:
+                        self.logger.info(f"{label}展开成功，共 {len(videos)} 个视频")
+                        self.playlist_expanded.emit(url, len(videos))
+                        for v in videos:
+                            expanded_urls.append(v['url'])
+                        continue
                 except Exception as e:
-                    self.logger.error(f"展开播放列表失败: {url} - {str(e)}")
-                    # 播放列表展开失败时，尝试作为单个视频处理
-                    expanded_urls.append(url)
-                    self.video_info_error.emit(url, f"播放列表展开失败：{str(e)}")
-            else:
-                expanded_urls.append(url)
-        
-        # 去重
-        seen = set()
-        unique_urls = []
+                    self.logger.warning(f"{label}展开失败，将尝试作为单个视频处理: {url} - {e}")
+                # 展开失败或结果为空 → 当做单个视频，由阶段二决定
+
+            expanded_urls.append(url)
+
+        # ── 去重 ──
+        seen: set = set()
+        parse_list: List[str] = []
         for url in expanded_urls:
-            # 提取视频ID进行去重
-            video_id = self._extract_video_id(url)
-            if video_id and video_id not in seen:
-                seen.add(video_id)
-                unique_urls.append(url)
-            elif not video_id and url not in seen:
-                seen.add(url)
-                unique_urls.append(url)
-        
-        # 解析每个视频
-        total = len(unique_urls)
-        self.logger.info(f"开始解析 {total} 个视频")
-        
-        for i, url in enumerate(unique_urls):
-            if self.is_cancelled:
-                break
-            
-            # 等待暂停解除
+            key = self._extract_video_id(url) or url
+            if key not in seen:
+                seen.add(key)
+                parse_list.append(url)
+
+        # ── 阶段二：解析每个 URL，带全回退链 ──
+        #   单视频解析失败 → 尝试展开为频道/播放列表
+        #   展开也失败 → 报错（两种途径均失败）
+        self.logger.info(f"开始解析 {len(parse_list)} 个视频（动态队列）")
+        idx = 0
+        while idx < len(parse_list) and not self.is_cancelled:
             self._wait_if_paused()
             if self.is_cancelled:
                 break
-            
-            self.progress_updated.emit(i + 1, total, f"正在解析 ({i+1}/{total}): {url[:50]}...")
-            
+
+            url = parse_list[idx]
+            idx += 1
+            self.progress_updated.emit(idx, len(parse_list),
+                                       f"正在解析 ({idx}/{len(parse_list)}): {url[:50]}...")
+
+            # 尝试 1：单个视频解析
+            single_error: Optional[Exception] = None
             try:
                 video_info = self.video_info_parser.parse_video(
-                    url, 
+                    url,
                     use_cookies=self.use_cookies,
                     cookies_file=self.cookies_file,
-                    proxy_url=self.proxy_url
+                    proxy_url=self.proxy_url,
                 )
                 self.video_info_retrieved.emit(url, video_info)
+                continue
             except Exception as e:
-                self.logger.error(f"解析视频失败: {url} - {str(e)}")
-                self.video_info_error.emit(url, str(e))
-        
+                single_error = e
+                self.logger.warning(f"单视频解析失败，尝试展开: {url} - {e}")
+
+            # 尝试 2：展开为频道或播放列表
+            expand_success = False
+            for expand_fn in [
+                self.video_info_parser.get_channel_videos,
+                self.video_info_parser.get_playlist_videos,
+            ]:
+                if self.is_cancelled:
+                    break
+                try:
+                    videos = expand_fn(url, self.use_cookies, self.cookies_file, self.proxy_url)
+                    if videos:
+                        self.logger.info(f"回退展开成功，追加 {len(videos)} 个视频: {url}")
+                        self.playlist_expanded.emit(url, len(videos))
+                        for v in videos:
+                            v_url = v['url']
+                            key = self._extract_video_id(v_url) or v_url
+                            if key not in seen:
+                                seen.add(key)
+                                parse_list.append(v_url)
+                        expand_success = True
+                        break
+                except Exception as expand_err:
+                    self.logger.warning(f"展开回退也失败: {url} - {expand_err}")
+
+            if not expand_success:
+                # 两种途径均失败，报告错误
+                self.logger.error(f"解析完全失败: {url} - {single_error}")
+                self.video_info_error.emit(url, str(single_error))
+
         self.all_completed.emit()
     
     def _wait_if_paused(self):
@@ -209,6 +235,7 @@ class MultiDownloadThread(QThread):
                 cookies_file=self.task.cookies_file,
                 prefer_mp4=self.task.prefer_mp4,
                 no_playlist=self.task.no_playlist,
+                overwrite=self.task.overwrite,
                 proxy_url=self.task.proxy_url
             )
             
@@ -236,6 +263,50 @@ class MultiDownloadThread(QThread):
         """取消下载"""
         self.is_cancelled = True
         self.downloader.cancel_download()
+
+
+class ParseErrorDialog(QDialog):
+    """自定义解析错误展示框：支持选中、复制、滚动条、最大100条限制"""
+    def __init__(self, errors: list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("解析错误")
+        self.resize(600, 400)
+        
+        layout = QVBoxLayout(self)
+        
+        self.text_edit = QTextEdit(self)
+        self.text_edit.setReadOnly(True)
+        # 使文本只可读且可选
+        self.text_edit.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        
+        error_text = "以下链接解析失败：\n\n"
+        max_errors = 100
+        for i, (url, error_msg) in enumerate(errors[:max_errors], 1):
+            error_text += f"{i}. {url}\n   错误: {error_msg}\n\n"
+            
+        if len(errors) > max_errors:
+            error_text += f"... 还有 {len(errors) - max_errors} 个错误未显示\n"
+            
+        error_text += "提示：请检查链接是否有效，或尝试使用 Cookie。"
+        self.text_edit.setPlainText(error_text)
+        layout.addWidget(self.text_edit)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        self.copy_btn = QPushButton("复制到剪切板", self)
+        self.copy_btn.clicked.connect(self.copy_to_clipboard)
+        btn_layout.addWidget(self.copy_btn)
+        
+        self.close_btn = QPushButton("关闭", self)
+        self.close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(self.close_btn)
+        
+        layout.addLayout(btn_layout)
+        
+    def copy_to_clipboard(self):
+        QApplication.clipboard().setText(self.text_edit.toPlainText())
+        QMessageBox.information(self, "提示", "已复制到剪切板")
 
 
 class MultiDownloadTab(QWidget):
@@ -287,21 +358,26 @@ class MultiDownloadTab(QWidget):
     def _init_ui(self):
         """初始化 UI"""
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
-        
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(8)
+
         # ===== URL 输入区域 =====
         input_group = QGroupBox("视频链接")
         input_layout = QVBoxLayout(input_group)
+        input_layout.setContentsMargins(8, 6, 8, 6)
+        input_layout.setSpacing(6)
         
         # URL 输入框
         self.url_input = QTextEdit()
+        self.url_input.setAcceptRichText(False)
         self.url_input.setPlaceholderText(
-            "在此输入多个 YouTube 视频链接，每行一个。\n"
+            "在此输入多个视频链接，每行一个（支持 YouTube、TikTok、Twitter、Instagram 等 1000+ 网站）\n"
             "支持：\n"
             "  • 单个视频链接\n"
-            "  • 播放列表链接（将自动展开）\n"
-            "  • 批量粘贴多个链接"
+            "  • 播放列表链接 例如：https://www.youtube.com/playlist?list=...\n"
+            "  • 频道链接 例如：https://www.youtube.com/@EnglishwithLucy\n"
+            "  • 批量粘贴多个链接\n"
+            "注意：除视频链接外，频道链接和列表链接一次只能有一个。"
         )
         self.url_input.setMinimumHeight(100)
         self.url_input.setMaximumHeight(120)
@@ -345,49 +421,88 @@ class MultiDownloadTab(QWidget):
         # ===== 下载设置区域 =====
         settings_group = QGroupBox("下载设置")
         settings_layout = QHBoxLayout(settings_group)
+        settings_layout.setContentsMargins(8, 6, 8, 6)
+        settings_layout.setSpacing(6)
         
         # 下载目录
         settings_layout.addWidget(QLabel("下载目录:"))
         self.dir_input = QLineEdit()
         self.dir_input.setReadOnly(True)
         self.dir_input.setPlaceholderText("请选择下载目录")
+        self.dir_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         settings_layout.addWidget(self.dir_input, 1)
         self.browse_button = QPushButton("浏览")
+        self.browse_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.browse_button.clicked.connect(self._browse_download_dir)
         settings_layout.addWidget(self.browse_button)
+
+        self.open_dir_button = QPushButton("打开目录")
+        self.open_dir_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.open_dir_button.clicked.connect(self._open_download_dir)
+        settings_layout.addWidget(self.open_dir_button)
         
         main_layout.addWidget(settings_group)
         
         # ===== 下载队列区域 =====
         queue_group = QGroupBox("下载队列")
         queue_layout = QVBoxLayout(queue_group)
+        queue_layout.setContentsMargins(8, 6, 8, 12)
+        queue_layout.setSpacing(6)
         
-        # 队列操作按钮
-        queue_buttons_layout = QHBoxLayout()
-        
+        # 第一行：队列信息 + 解析进度
+        queue_top_layout = QHBoxLayout()
         self.queue_info_label = QLabel("队列: 0 个任务")
-        queue_buttons_layout.addWidget(self.queue_info_label)
-        
+        queue_top_layout.addWidget(self.queue_info_label)
+        self.parse_progress_label = QLabel()
+        self.parse_progress_label.setStyleSheet("color: #888888;")
+        self.parse_progress_label.setVisible(False)
+        queue_top_layout.addWidget(self.parse_progress_label)
+        queue_top_layout.addStretch()
+        queue_layout.addLayout(queue_top_layout)
+
+        # 第二行：质量选择（左） + 操作按钮（右）
+        queue_buttons_layout = QHBoxLayout()
+
+        queue_buttons_layout.addWidget(QLabel("视频质量:"))
+        self.global_video_combo = QComboBox()
+        self.global_video_combo.addItems([
+            "最高画质", "4K", "2K", "1080p", "720p", "480p", "360p"
+        ])
+        self.global_video_combo.setCurrentIndex(4)  # 默认 720p
+        # 对应高度映射: None, 2160, 1440, 1080, 720, 480, 360
+        self._target_heights = [None, 2160, 1440, 1080, 720, 480, 360]
+        self.global_video_combo.currentIndexChanged.connect(self._on_global_quality_changed)
+        queue_buttons_layout.addWidget(self.global_video_combo)
+
+        queue_buttons_layout.addSpacing(10)
+        queue_buttons_layout.addWidget(QLabel("音频质量:"))
+        self.global_audio_combo = QComboBox()
+        self.global_audio_combo.addItems([
+            "最佳质量", "第一档(最大)", "第二档(中等)", "最小(省流量)"
+        ])
+        self.global_audio_combo.currentIndexChanged.connect(self._on_global_quality_changed)
+        queue_buttons_layout.addWidget(self.global_audio_combo)
+
         queue_buttons_layout.addStretch()
-        
+
         self.start_all_button = QPushButton("全部开始")
         self.start_all_button.clicked.connect(self._start_all_tasks)
         self.start_all_button.setEnabled(False)
         queue_buttons_layout.addWidget(self.start_all_button)
-        
+
         self.pause_all_button = QPushButton("全部暂停")
         self.pause_all_button.clicked.connect(self._pause_all_tasks)
         self.pause_all_button.setEnabled(False)
         queue_buttons_layout.addWidget(self.pause_all_button)
-        
+
         self.clear_completed_button = QPushButton("清除已完成")
         self.clear_completed_button.clicked.connect(self._clear_completed_tasks)
         queue_buttons_layout.addWidget(self.clear_completed_button)
-        
-        self.clear_all_button = QPushButton("清空队列")
+
+        self.clear_all_button = QPushButton("清空")
         self.clear_all_button.clicked.connect(self._clear_all_tasks)
         queue_buttons_layout.addWidget(self.clear_all_button)
-        
+
         queue_layout.addLayout(queue_buttons_layout)
         
         # 任务表格
@@ -423,7 +538,11 @@ class MultiDownloadTab(QWidget):
         self.task_table.setColumnWidth(6, 70)   # 剩余时间
         self.task_table.setColumnWidth(7, 80)   # 操作（增加宽度以显示图标）
         
-        self.task_table.setMinimumHeight(200)
+        # 固定行高 32px，表头约 28px，显示 5 行 = 32*5+28 = 188，留余量设 220
+        self.task_table.verticalHeader().setDefaultSectionSize(32)
+        self.task_table.verticalHeader().setVisible(False)
+        self.task_table.setMinimumHeight(220)
+        self.task_table.setFrameShape(QFrame.NoFrame)
         queue_layout.addWidget(self.task_table)
         
         main_layout.addWidget(queue_group, 1)  # 给队列区域更多空间
@@ -431,6 +550,8 @@ class MultiDownloadTab(QWidget):
         # ===== 总体进度区域 =====
         progress_group = QGroupBox("总体进度")
         progress_layout = QVBoxLayout(progress_group)
+        progress_layout.setContentsMargins(8, 6, 8, 8)
+        progress_layout.setSpacing(6)
         
         self.total_progress_bar = QProgressBar()
         self.total_progress_bar.setRange(0, 100)
@@ -460,14 +581,8 @@ class MultiDownloadTab(QWidget):
     
     def _validate_url(self, url: str) -> Tuple[bool, str]:
         """验证 URL"""
-        if not re.match(r'https?:\/\/', url):
+        if not re.match(r'https?://', url):
             return False, "无效的链接格式"
-        
-        youtube_regex = re.compile(
-            r'^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.+$')
-        if not youtube_regex.match(url):
-            return False, "不是有效的 YouTube 链接"
-        
         return True, ""
     
     def _extract_urls(self, text: str) -> List[str]:
@@ -479,6 +594,8 @@ class MultiDownloadTab(QWidget):
         for line in lines:
             url = line.strip()
             if url and url not in seen:
+                if not url.startswith('http://') and not url.startswith('https://'):
+                    url = 'https://' + url
                 is_valid, _ = self._validate_url(url)
                 if is_valid:
                     urls.append(url)
@@ -495,7 +612,17 @@ class MultiDownloadTab(QWidget):
         
         urls = self._extract_urls(text)
         if not urls:
-            QMessageBox.warning(self, "警告", "未找到有效的 YouTube 链接")
+            QMessageBox.warning(self, "警告", "未找到有效的视频链接")
+            return
+        
+        # 检查频道链接和列表链接数量限制
+        collection_urls = 0
+        for u in urls:
+            if self.video_info_parser.is_playlist_url(u) or self.video_info_parser.is_channel_url(u):
+                collection_urls += 1
+        
+        if collection_urls > 1:
+            QMessageBox.warning(self, "警告", "除视频链接外，频道链接和列表链接一次只能有一个")
             return
         
         # 清空之前的错误
@@ -571,13 +698,14 @@ class MultiDownloadTab(QWidget):
             self.parse_button.setEnabled(True)
             self.parse_button.setText("解析链接")
             
-            # 隐藏暂停和取消按钮
+            # 隐藏解析进度和暂停、取消按钮
+            self.parse_progress_label.setVisible(False)
             self.pause_parse_button.setVisible(False)
             self.cancel_parse_button.setVisible(False)
-            
+
             # 更新下载队列按钮状态
             self._update_button_states()
-            
+
             if self.status_bar:
                 self.status_bar.showMessage("解析已取消")
     
@@ -603,6 +731,14 @@ class MultiDownloadTab(QWidget):
         formats = self.video_info_parser.get_available_formats(video_info)
         formatted_formats = self.video_info_parser.get_formatted_formats(formats)
         
+        # 检查是有可用格式，如果没有，标记为失败
+        status = DownloadStatus.PENDING
+        error_msg = ""
+        if not formatted_formats:
+            status = DownloadStatus.FAILED
+            error_msg = "无可用格式（解析失败）"
+            self.logger.warning(f"视频无可用格式: {url}")
+
         # 创建任务（默认使用最高质量）
         task = QueuedTask(
             priority=DownloadPriority.NORMAL.value,
@@ -615,7 +751,8 @@ class MultiDownloadTab(QWidget):
             cookies_file=self.cookie_tab.get_cookie_file() if self.cookie_tab and self.cookie_tab.is_cookie_available() else None,
             prefer_mp4=True,
             no_playlist=True,
-            status=DownloadStatus.PENDING,
+            status=status,
+            error_message=error_msg,
             proxy_url=self._get_proxy_url()
         )
         
@@ -623,18 +760,50 @@ class MultiDownloadTab(QWidget):
         self._tasks[task.id] = task
         self._task_formats[task.id] = formatted_formats
         self._task_video_info[task.id] = video_info
-        self._add_task_to_table(task, formatted_formats)
+        
+        # Apply global quality on initialization
+        target_height = self._target_heights[self.global_video_combo.currentIndex()]
+        video_idx = self._find_best_video_format_index(formatted_formats, target_height)
+        
+        audio_tier = self.global_audio_combo.currentIndex()
+        audio_idx = self._find_best_audio_format_index(formatted_formats, audio_tier)
+        
+        self._add_task_to_table(task, formatted_formats, video_idx, audio_idx)
         
         self.logger.info(f"添加任务: {task.title}")
     
     def _on_video_info_error(self, url: str, error_message: str):
         """视频信息获取失败"""
         self.logger.error(f"解析失败: {url} - {error_message}")
-        # 记录错误
+        # 记录错误 (暂时仍然在数组里记一下，以免其他逻辑需要)
         self._parse_errors.append((url, error_message))
+        
+        # 将解析失败的视频也添加到列表中，状态置为 FAILED，点击开始不会启动，自动跳过
+        task = QueuedTask(
+            priority=DownloadPriority.NORMAL.value,
+            url=url,
+            title=f"[解析失败] {url}",
+            output_dir=self.dir_input.text(),
+            video_format_id="",
+            audio_format_id="",
+            status=DownloadStatus.FAILED,
+            error_message=ErrorMessages.get_user_message(error_message, include_suggestion=False),
+            proxy_url=self._get_proxy_url()
+        )
+        
+        self._tasks[task.id] = task
+        self._task_formats[task.id] = []
+        self._task_video_info[task.id] = {}
+        
+        self._add_task_to_table(task, [], 0, 0)
     
     def _on_parse_progress(self, current: int, total: int, status: str):
         """解析进度更新"""
+        if total > 0:
+            self.parse_progress_label.setText(f"| 解析中 {current}/{total}")
+        else:
+            self.parse_progress_label.setText("| 解析中...")
+        self.parse_progress_label.setVisible(True)
         if self.status_bar:
             if total > 0:
                 self.status_bar.showMessage(f"解析进度: {current}/{total} - {status}")
@@ -651,22 +820,27 @@ class MultiDownloadTab(QWidget):
         """所有链接解析完成"""
         self.parse_button.setEnabled(True)
         self.parse_button.setText("解析链接")
-        
+
+        # 隐藏解析进度
+        self.parse_progress_label.setVisible(False)
+
         # 隐藏暂停和取消按钮
         self.pause_parse_button.setVisible(False)
         self.cancel_parse_button.setVisible(False)
         
         # 显示解析结果
-        success_count = len(self._tasks)
+        total_tasks_count = len(self._tasks)
+        parse_failed_count = sum(1 for t in self._tasks.values() if str(t.title).startswith("[解析失败]"))
+        success_count = total_tasks_count - parse_failed_count
         error_count = len(self._parse_errors)
         
         if self.status_bar:
             if error_count > 0:
                 self.status_bar.showMessage(
-                    f"解析完成：成功 {success_count} 个，失败 {error_count} 个"
+                    f"解析完成：本次失败 {error_count} 个，当前队列成功解析共 {success_count} 个"
                 )
             else:
-                self.status_bar.showMessage(f"解析完成，共 {success_count} 个任务")
+                self.status_bar.showMessage(f"解析完成，当前队列共 {success_count} 个任务")
         
         # 如果有错误，显示错误对话框
         if error_count > 0:
@@ -681,21 +855,11 @@ class MultiDownloadTab(QWidget):
         """显示解析错误信息"""
         if not self._parse_errors:
             return
-        
-        error_text = "以下链接解析失败：\n\n"
-        for i, (url, error_msg) in enumerate(self._parse_errors[:10], 1):  # 最多显示10个
-            error_text += f"{i}. {url}\n   错误: {error_msg[:100]}\n\n"
-        
-        if len(self._parse_errors) > 10:
-            error_text += f"... 还有 {len(self._parse_errors) - 10} 个错误未显示\n"
-        
-        QMessageBox.warning(
-            self, 
-            "解析错误", 
-            error_text + "\n提示：请检查链接是否有效，或尝试使用 Cookie。"
-        )
+            
+        dialog = ParseErrorDialog(self._parse_errors, self)
+        dialog.exec_()
     
-    def _add_task_to_table(self, task: QueuedTask, formatted_formats: List[Dict] = None):
+    def _add_task_to_table(self, task: QueuedTask, formatted_formats: List[Dict] = None, initial_video_idx: int = 0, initial_audio_idx: int = 0):
         """添加任务到表格"""
         row = self.task_table.rowCount()
         self.task_table.insertRow(row)
@@ -709,12 +873,17 @@ class MultiDownloadTab(QWidget):
         
         # 列1: 视频质量下拉框
         video_combo = QComboBox()
+        video_combo.setObjectName("tableCombo")
         video_combo.addItem("最高画质", "best")
         if formatted_formats:
             for fmt in formatted_formats:
                 if fmt['type'] == 'video':
                     video_combo.addItem(fmt['display'], fmt['format_id'])
         video_combo.setProperty("task_id", task.id)
+        if initial_video_idx < video_combo.count():
+            video_combo.setCurrentIndex(initial_video_idx)
+            task.video_format_id = video_combo.currentData()
+            
         video_combo.currentIndexChanged.connect(
             lambda idx, tid=task.id: self._on_video_format_changed(tid)
         )
@@ -722,12 +891,17 @@ class MultiDownloadTab(QWidget):
         
         # 列2: 音频质量下拉框
         audio_combo = QComboBox()
+        audio_combo.setObjectName("tableCombo")
         audio_combo.addItem("最高音质", "best")
         if formatted_formats:
             for fmt in formatted_formats:
                 if fmt['type'] == 'audio':
                     audio_combo.addItem(fmt['display'], fmt['format_id'])
         audio_combo.setProperty("task_id", task.id)
+        if initial_audio_idx < audio_combo.count():
+            audio_combo.setCurrentIndex(initial_audio_idx)
+            task.audio_format_id = audio_combo.currentData()
+            
         audio_combo.currentIndexChanged.connect(
             lambda idx, tid=task.id: self._on_audio_format_changed(tid)
         )
@@ -746,12 +920,17 @@ class MultiDownloadTab(QWidget):
         progress_bar.setTextVisible(True)
         progress_bar.setStyleSheet("""
             QProgressBar {
-                border: 1px solid #C0C0C0;
-                border-radius: 3px;
+                border: none;
+                border-radius: 4px;
+                background-color: #F1F5F9;
                 text-align: center;
+                color: #475569;
+                font-weight: 600;
             }
             QProgressBar::chunk {
-                background-color: #0078D7;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                            stop:0 #EF4444, stop:1 #DC2626);
+                border-radius: 4px;
             }
         """)
         self.task_table.setCellWidget(row, 4, progress_bar)
@@ -793,6 +972,97 @@ class MultiDownloadTab(QWidget):
         if isinstance(audio_combo, QComboBox):
             self._tasks[task_id].audio_format_id = audio_combo.currentData()
             self.logger.debug(f"任务 {task_id} 音频格式改为: {audio_combo.currentData()}")
+            
+    def _find_best_video_format_index(self, formatted_formats: List[Dict], target_height: Optional[int]) -> int:
+        """寻找最接近对应分辨率的视频格式索引"""
+        if target_height is None or not formatted_formats:
+            return 0  # 自动选择最佳
+            
+        min_diff = float('inf')
+        best_video_index = 0
+        video_index = 1  # 索引 0 是 "best"
+        
+        for fmt in formatted_formats:
+            if fmt['type'] == 'video':
+                resolution = fmt.get('resolution', '')
+                if 'x' in resolution:
+                    try:
+                        height = int(resolution.split('x')[1])
+                        diff = abs(height - target_height)
+                        # 如果差异更小，或者差异相同但分辨率更大(更高画质)
+                        if diff < min_diff:
+                            min_diff = diff
+                            best_video_index = video_index
+                    except ValueError:
+                        pass
+                video_index += 1
+                
+        return best_video_index
+
+    def _find_best_audio_format_index(self, formatted_formats: List[Dict], target_tier: int) -> int:
+        """寻找最接近对应音频档位的格式索引
+        target_tier: 0=自动选择最佳, 1=第一档(最大), 2=第二档, 3=最小
+        """
+        if target_tier == 0 or not formatted_formats:
+            return 0
+            
+        audio_options = []
+        audio_index = 1
+        
+        for fmt in formatted_formats:
+            if fmt['type'] == 'audio':
+                abr = fmt.get('abr', 0)
+                if abr is None:
+                    abr = 0
+                audio_options.append({
+                    'index': audio_index,
+                    'abr': float(abr)
+                })
+                audio_index += 1
+                
+        if not audio_options:
+            return 0
+            
+        # 根据码率降序排序（高音质在前面）
+        audio_options.sort(key=lambda x: x['abr'], reverse=True)
+        
+        if target_tier == 1:
+            # 第一档（最大）
+            return audio_options[0]['index']
+        elif target_tier == 2:
+            # 第二档
+            if len(audio_options) >= 2:
+                return audio_options[1]['index']
+            else:
+                return audio_options[0]['index']
+        elif target_tier == 3:
+            # 最小
+            return audio_options[-1]['index']
+            
+        return 0
+
+    def _on_global_quality_changed(self):
+        """全局质量设置改变时更新所有等待中和暂停中的任务"""
+        target_height = self._target_heights[self.global_video_combo.currentIndex()]
+        audio_tier = self.global_audio_combo.currentIndex()
+        
+        for task_id, task in self._tasks.items():
+            if task.status in (DownloadStatus.PENDING, DownloadStatus.PAUSED, DownloadStatus.FAILED, DownloadStatus.CANCELLED):
+                row = self._task_rows.get(task_id)
+                if row is not None:
+                    formatted_formats = self._task_formats.get(task_id, [])
+                    video_idx = self._find_best_video_format_index(formatted_formats, target_height)
+                    audio_idx = self._find_best_audio_format_index(formatted_formats, audio_tier)
+                    
+                    video_combo = self.task_table.cellWidget(row, 1)
+                    if isinstance(video_combo, QComboBox) and video_idx < video_combo.count():
+                        video_combo.setCurrentIndex(video_idx)
+                        task.video_format_id = video_combo.currentData()
+                        
+                    audio_combo = self.task_table.cellWidget(row, 2)
+                    if isinstance(audio_combo, QComboBox) and audio_idx < audio_combo.count():
+                        audio_combo.setCurrentIndex(audio_idx)
+                        task.audio_format_id = audio_combo.currentData()
     
     def _create_action_buttons(self, task: QueuedTask) -> QWidget:
         """创建操作按钮"""
@@ -801,21 +1071,23 @@ class MultiDownloadTab(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(2)
         
-        # 开始/暂停按钮 - 使用 PyQt5 内置图标
+        # 开始/暂停按钮
         start_pause_btn = QPushButton()
         start_pause_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         start_pause_btn.setFixedSize(30, 24)
         start_pause_btn.setToolTip("开始下载")
-        start_pause_btn.setObjectName(f"start_btn_{task.id}")
+        start_pause_btn.setObjectName("tableBtn")
+        start_pause_btn.setProperty("task_btn_id", f"start_{task.id}")
         start_pause_btn.clicked.connect(lambda: self._toggle_task(task.id))
         layout.addWidget(start_pause_btn)
-        
-        # 取消按钮 - 使用 PyQt5 内置图标
+
+        # 取消按钮
         cancel_btn = QPushButton()
         cancel_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogCloseButton))
         cancel_btn.setFixedSize(30, 24)
         cancel_btn.setToolTip("取消任务")
-        cancel_btn.setObjectName(f"cancel_btn_{task.id}")
+        cancel_btn.setObjectName("tableBtn")
+        cancel_btn.setProperty("task_btn_id", f"cancel_{task.id}")
         cancel_btn.clicked.connect(lambda: self._remove_task(task.id))
         layout.addWidget(cancel_btn)
         
@@ -889,15 +1161,19 @@ class MultiDownloadTab(QWidget):
         # 更新操作按钮图标（列7）
         action_widget = self.task_table.cellWidget(row, 7)
         if action_widget:
-            start_btn = action_widget.findChild(QPushButton, f"start_btn_{task_id}")
+            start_btn = next(
+                (b for b in action_widget.findChildren(QPushButton)
+                 if b.property("task_btn_id") == f"start_{task_id}"),
+                None
+            )
             if start_btn:
                 if task.status == DownloadStatus.DOWNLOADING:
                     start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
                     start_btn.setToolTip("暂停下载")
                 elif task.status == DownloadStatus.COMPLETED:
-                    start_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
-                    start_btn.setToolTip("已完成")
-                    start_btn.setEnabled(False)
+                    start_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+                    start_btn.setToolTip("重新下载 (覆盖原文件)")
+                    start_btn.setEnabled(True)
                 elif task.status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED):
                     start_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
                     start_btn.setToolTip("重试")
@@ -919,11 +1195,22 @@ class MultiDownloadTab(QWidget):
         elif task.status == DownloadStatus.PAUSED:
             self._start_task(task_id)
         elif task.status in (DownloadStatus.FAILED, DownloadStatus.CANCELLED):
+            # 如果是解析失败且没有任何格式，可以提示用户重新添加或者将其重置并重试
             # 重试
             task.status = DownloadStatus.PENDING
+            task.overwrite = False
             task.progress = 0
             task.error_message = ""
             self._update_task_row(task_id)
+            self._start_task(task_id)
+        elif task.status == DownloadStatus.COMPLETED:
+            # 重新下载
+            task.status = DownloadStatus.PENDING
+            task.overwrite = True
+            task.progress = 0
+            task.error_message = ""
+            self._update_task_row(task_id)
+            self._start_task(task_id)
     
     def _start_task(self, task_id: str):
         """开始下载任务"""
@@ -941,11 +1228,17 @@ class MultiDownloadTab(QWidget):
         
         task = self._tasks[task_id]
         
-        # 检查下载目录
-        if not task.output_dir or not os.path.exists(task.output_dir):
+        # 检查下载目录，不存在则自动创建
+        if not task.output_dir:
             task.output_dir = self.dir_input.text()
-            if not task.output_dir:
-                QMessageBox.warning(self, "警告", "请先选择下载目录")
+        if not task.output_dir:
+            QMessageBox.warning(self, "警告", "请先选择下载目录")
+            return
+        if not os.path.exists(task.output_dir):
+            try:
+                os.makedirs(task.output_dir, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "警告", f"无法创建下载目录：{e}")
                 return
         
         # 更新状态
@@ -1283,19 +1576,34 @@ class MultiDownloadTab(QWidget):
             self.dir_input.setText(dir_path)
             if self.config_manager:
                 self.config_manager.set('download_dir', dir_path)
+
+    def _open_download_dir(self):
+        """在文件管理器中打开下载目录（跨平台）"""
+        import sys
+        dir_path = self.dir_input.text()
+        if not dir_path or not os.path.exists(dir_path):
+            QMessageBox.warning(self, "警告", "下载目录不存在，请先选择有效的目录")
+            return
+        if sys.platform == 'win32':
+            os.startfile(dir_path)
+        elif sys.platform == 'darwin':
+            import subprocess
+            subprocess.Popen(['open', dir_path])
+        else:
+            import subprocess
+            subprocess.Popen(['xdg-open', dir_path])
     
     def _set_default_download_dir(self):
         """设置默认下载目录"""
         if self.config_manager:
             last_dir = self.config_manager.get('download_dir')
-            if last_dir and os.path.exists(last_dir):
+            if last_dir:
                 self.dir_input.setText(last_dir)
                 return
-        
-        # 使用桌面作为默认目录
-        desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-        if os.path.exists(desktop):
-            self.dir_input.setText(desktop)
+
+        # 默认目录：D:\youtobe_bd_data
+        default_dir = r"D:\youtobe_bd_data"
+        self.dir_input.setText(default_dir)
     
     # ===== 事件总线回调 =====
     

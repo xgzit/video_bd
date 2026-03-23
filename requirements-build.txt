@@ -1,0 +1,13 @@
+# 跨平台构建依赖（CI / 本地打包用）
+# Windows 专用包（pywin32、undetected-chromedriver 等）请在本地 Windows 环境单独安装
+
+PyQt5>=5.15
+yt-dlp
+requests
+certifi
+pycryptodome
+websockets
+websocket-client
+pillow
+pyinstaller>=6.0
+pyinstaller-hooks-contrib

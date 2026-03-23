@@ -1,5 +1,5 @@
 """
-YouTube Downloader 统一缓存管理模块
+youtobe_bd 统一缓存管理模块
 实现双层缓存：内存 LRU + SQLite 持久化
 """
 import os

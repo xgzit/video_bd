@@ -1,5 +1,5 @@
 """
-YouTube Downloader 用户友好错误提示模块
+youtobe_bd 用户友好错误提示模块
 将技术性错误消息转换为用户可理解的提示
 """
 from typing import Dict, Optional, Tuple

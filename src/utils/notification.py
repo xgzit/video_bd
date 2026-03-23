@@ -1,5 +1,5 @@
 """
-YouTube Downloader 的通知管理模块
+youtobe_bd 的通知管理模块
 负责处理下载完成通知和其他系统通知
 """
 import os

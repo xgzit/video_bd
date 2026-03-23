@@ -1,5 +1,5 @@
 """
-YouTube Downloader 的主入口模块
+youtobe_bd 的主入口模块
 """
 import os
 import sys

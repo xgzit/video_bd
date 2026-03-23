@@ -3,6 +3,26 @@ YouTube Downloader 的主程序入口
 """
 import os
 import sys
+import ctypes
+
+# 必须在任何 PyQt5 import 之前声明 DPI 感知
+# 导入 PyQt5 模块本身就会触发 Qt 初始化，之后再调用就晚了
+os.environ['QT_AUTO_SCREEN_SCALE_FACTOR'] = '1'
+if sys.platform == 'win32':
+    try:
+        # Windows 10 1703+: PerMonitorV2，最精确
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)
+    except Exception:
+        try:
+            # Windows 8.1+: PerMonitor
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                # Windows Vista+: 系统 DPI 感知（兜底）
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
 from PyQt5.QtWidgets import QApplication, QSplashScreen
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
@@ -18,7 +38,11 @@ def main():
     # 初始化日志
     logger = LoggerManager().get_logger()
     logger.info("应用程序启动")
-    
+
+    # 启用 HiDPI 支持，必须在创建 QApplication 之前设置
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     # 创建应用程序
     app = QApplication(sys.argv)
     

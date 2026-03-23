@@ -1,5 +1,5 @@
 """
-YouTube Downloader 统一异常处理模块
+youtobe_bd 统一异常处理模块
 定义所有自定义异常类，提供统一的错误处理机制
 """
 from typing import Optional, Any
@@ -8,7 +8,7 @@ from functools import wraps
 
 class YouTubeDownloaderError(Exception):
     """
-    YouTube Downloader 基础异常类
+    youtobe_bd 基础异常类
     所有自定义异常都应继承此类
     """
     

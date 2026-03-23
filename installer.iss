@@ -1,84 +1,74 @@
-#define MyAppName "YouTube Downloader"
-#define MyAppVersion "1.2.0"
-#define MyAppPublisher "Hwangzhun"
-#define MyAppURL "https://github.com/hwangzhun/youtube_downloader"
-#define MyAppExeName "YouTube_Downloader.exe"
+#define MyAppName "video_bd"
+#define MyAppVersion "1.1.0"
+#define MyAppPublisher "xgzit"
+#define MyAppURL "https://github.com/xgzit/video_bd"
+#define MyAppExeName "video_bd.exe"
+#define MyAppDescription "全网视频批量下载工具"
 
 [Setup]
-; 注意: AppId的值为单独标识该应用程序。
-; 不要为其他安装程序使用相同的AppId值。
-AppId={{A1B2C3D4-E5F6-4A5B-8C7D-9E0F1A2B3C4D}
-AppName={#MyAppName} - {#MyAppVersion}
+AppId={{F3A7B2C1-D4E5-4F6A-9B8C-0D1E2F3A4B5C}
+AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} v{#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName} - {#MyAppVersion}
+AppComments={#MyAppDescription}
+DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
-OutputDir=installer
-OutputBaseFilename=YouTube_Downloader_Setup-{#MyAppVersion}
-Compression=lzma
+OutputDir=release
+OutputBaseFilename=video_bd_Setup_v{#MyAppVersion}
+Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=resources\icons\app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName}
 
-; 权限设置
+; 版权信息
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppDescription}
+VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
+
+; 安装时请求管理员权限，支持用户自由选择安装目录（含 D 盘等）
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
-DirExistsWarning=no
-AllowUNCPath=yes
+
+; 安装前自动关闭正在运行的旧版本，避免文件被占用
+CloseApplications=yes
+CloseApplicationsFilter=*.exe
+RestartApplications=no
+
+; 安装后不需要重启
+RestartIfNeededByRun=no
 
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; 桌面快捷方式：默认勾选
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+
+; 升级时清理旧版 _internal 目录，防止删除的文件残留
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
-; 主程序文件
-Source: "dist\YouTube_Downloader\YouTube_Downloader.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\YouTube_Downloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\build\video_bd\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\build\video_bd\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
-; 设置安装目录的权限
 Name: "{app}"; Permissions: everyone-full
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; 开始菜单
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "{#MyAppDescription}"
+Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
+; 桌面快捷方式
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "{#MyAppDescription}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
-
-[Code]
-var
-  ResultCode: Integer;
-
-function InitializeSetup(): Boolean;
-begin
-  Result := True;
-end;
-
-// 添加管理员权限请求和设置安装目录的权限
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssInstall then
-  begin
-    if not IsAdminLoggedOn then
-    begin
-      MsgBox('此应用程序需要管理员权限才能正常运行。', mbInformation, MB_OK);
-    end;
-  end
-  else if CurStep = ssPostInstall then
-  begin
-    // 设置安装目录的完全控制权限
-    if not Exec('icacls', '"' + ExpandConstant('{app}') + '" /grant Everyone:(OI)(CI)F /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    begin
-      MsgBox('设置目录权限失败。', mbError, MB_OK);
-    end;
-  end;
-end; 
+; 安装完成后提供"立即启动"选项
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent runascurrentuser

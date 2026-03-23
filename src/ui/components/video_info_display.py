@@ -1,5 +1,5 @@
 """
-YouTube Downloader 视频信息显示组件
+youtobe_bd 视频信息显示组件
 提供视频信息展示功能
 """
 from typing import Optional, Dict

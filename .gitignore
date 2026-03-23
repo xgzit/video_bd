@@ -1,0 +1,38 @@
+# 构建产物
+build/
+dist/
+release/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+
+# 虚拟环境
+.env/
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.user
+
+# 日志
+*.log
+logs/
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 打包临时文件
+*.spec.tmp
+installer/

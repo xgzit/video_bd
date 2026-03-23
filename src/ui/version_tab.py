@@ -1,5 +1,5 @@
 """
-YouTube Downloader 版本标签页模块
+youtobe_bd 版本标签页模块
 负责创建和管理版本标签页界面
 """
 import os

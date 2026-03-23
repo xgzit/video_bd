@@ -233,6 +233,7 @@ class VideoDownloader:
                        cookies_file: str = None,
                        prefer_mp4: bool = True,
                        no_playlist: bool = False,
+                       overwrite: bool = False,
                        proxy_url: str = None) -> None:
         """
         下載视频
@@ -269,7 +270,7 @@ class VideoDownloader:
         # 創建下載線程
         self.download_thread = threading.Thread(
             target=self._download_thread,
-            args=(urls, output_dir, format_id, use_cookies, cookies_file, prefer_mp4, no_playlist, proxy_url)
+            args=(urls, output_dir, format_id, use_cookies, cookies_file, prefer_mp4, no_playlist, overwrite, proxy_url)
         )
         self.download_thread.daemon = True
         self.download_thread.start()
@@ -282,6 +283,7 @@ class VideoDownloader:
                         cookies_file: str,
                         prefer_mp4: bool,
                         no_playlist: bool,
+                        overwrite: bool = False,
                         proxy_url: str = None) -> None:
         """
         下載線程
@@ -358,6 +360,10 @@ class VideoDownloader:
                 # 如果優先選擇MP4格式
                 if prefer_mp4:
                     cmd.extend(['--merge-output-format', 'mp4'])
+                
+                # 如果需要覆盖已有文件
+                if overwrite:
+                    cmd.append('--force-overwrites')
                 
                 # 如果使用cookies
                 if use_cookies and cookies_file:

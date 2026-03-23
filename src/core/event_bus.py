@@ -1,5 +1,5 @@
 """
-YouTube Downloader 事件总线模块
+youtobe_bd 事件总线模块
 实现发布-订阅模式，用于解耦 UI 和业务逻辑
 """
 import threading

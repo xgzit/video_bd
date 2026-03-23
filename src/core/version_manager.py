@@ -1,5 +1,5 @@
 """
-YouTube Downloader 版本管理模块
+youtobe_bd 版本管理模块
 负责处理 yt-dlp 和 ffmpeg 的版本检查和更新
 """
 import os
@@ -15,8 +15,8 @@ from typing import Dict, Tuple, Optional, List
 
 from src.utils.logger import LoggerManager
 from src.utils.platform import (
-    run_subprocess, get_yt_dlp_path, get_ffmpeg_path, 
-    get_binaries_dir, ensure_directory
+    run_subprocess, get_yt_dlp_path, get_ffmpeg_path,
+    get_binaries_dir, ensure_directory, IS_WINDOWS, IS_MACOS, IS_LINUX
 )
 
 
@@ -65,6 +65,54 @@ class VersionManager:
         except Exception as e:
             self.logger.error(f"创建目录时发生错误: {str(e)}", exc_info=True)
     
+    def _get_yt_dlp_download_url(self, release_info: dict) -> str:
+        """从 release info 中选出适合当前平台的 yt-dlp 下载链接"""
+        if IS_WINDOWS:
+            target = 'yt-dlp.exe'
+        elif IS_MACOS:
+            target = 'yt-dlp_macos'
+        else:
+            target = 'yt-dlp_linux'
+
+        for asset in release_info.get('assets', []):
+            if asset['name'] == target:
+                return asset['browser_download_url']
+        # fallback: 通用 yt-dlp（无扩展名，适用于 Linux）
+        for asset in release_info.get('assets', []):
+            if asset['name'] == 'yt-dlp':
+                return asset['browser_download_url']
+        return ''
+
+    def _get_ffmpeg_download_url(self, release_info: dict) -> str:
+        """从 release info 中选出适合当前平台的 FFmpeg 下载链接"""
+        self.logger.info("开始查找 FFmpeg 下载链接...")
+        assets = release_info.get('assets', [])
+
+        if IS_WINDOWS:
+            patterns = [
+                lambda n: 'win64-gpl' in n and 'shared' not in n and n.endswith('.zip'),
+                lambda n: 'win64' in n and 'gpl' in n and n.endswith('.zip'),
+            ]
+        elif IS_MACOS:
+            patterns = [
+                lambda n: 'macos64-gpl' in n and n.endswith('.zip'),
+                lambda n: 'macos' in n and 'gpl' in n and n.endswith('.zip'),
+            ]
+        else:
+            patterns = [
+                lambda n: 'linux64-gpl' in n and 'shared' not in n and n.endswith('.tar.xz'),
+                lambda n: 'linux64' in n and 'gpl' in n and n.endswith('.tar.xz'),
+            ]
+
+        for pattern in patterns:
+            for asset in assets:
+                self.logger.info(f"检查资源: {asset['name']}")
+                if pattern(asset['name']):
+                    url = asset['browser_download_url']
+                    self.logger.info(f"找到匹配的下载链接: {url}")
+                    return url
+        return ''
+
     def _create_download_session(self) -> requests.Session:
         """
         创建带有重试机制的下载会话
@@ -117,17 +165,12 @@ class VersionManager:
                 response.raise_for_status()
                 release_info = response.json()
                 
-                download_url = ""
-                for asset in release_info['assets']:
-                    if asset['name'] == 'yt-dlp.exe':
-                        download_url = asset['browser_download_url']
-                        break
-                
+                download_url = self._get_yt_dlp_download_url(release_info)
                 if not download_url:
                     error_msg = "未找到 yt-dlp 下载链接"
                     self.logger.error(error_msg)
                     return False, error_msg
-                
+
                 # 下載 yt-dlp
                 if progress_callback:
                     progress_callback(0, "正在下载 yt-dlp...")
@@ -152,17 +195,12 @@ class VersionManager:
                 response.raise_for_status()
                 release_info = response.json()
                 
-                download_url = ""
-                for asset in release_info['assets']:
-                    if 'win64-gpl' in asset['name'] and 'shared' not in asset['name']:
-                        download_url = asset['browser_download_url']
-                        break
-                
+                download_url = self._get_ffmpeg_download_url(release_info)
                 if not download_url:
-                    error_msg = "未找到 ffmpeg 下载链接"
+                    error_msg = "未找到适合当前平台的 FFmpeg 下载链接"
                     self.logger.error(error_msg)
                     return False, error_msg
-                
+
                 # 下载并安装 ffmpeg
                 result = self.update_ffmpeg(download_url, progress_callback)
                 if not result[0]:
@@ -268,15 +306,10 @@ class VersionManager:
             # 保存 release_info 供后续获取 release notes
             self._yt_dlp_release_info = release_info
             
-            # 查找 Windows 可执行文件下载 URL
-            download_url = ""
-            for asset in release_info['assets']:
-                if asset['name'] == 'yt-dlp.exe':
-                    download_url = asset['browser_download_url']
-                    break
-            
+            # 查找对应平台的可执行文件下载 URL
+            download_url = self._get_yt_dlp_download_url(release_info)
             if not download_url:
-                error_msg = "未找到 Windows 可执行文件下载链接"
+                error_msg = "未找到适合当前平台的 yt-dlp 下载链接"
                 self.logger.error(error_msg)
                 return False, latest_version, error_msg
             
@@ -306,20 +339,20 @@ class VersionManager:
         """
         try:
             if hasattr(self, '_yt_dlp_release_info') and self._yt_dlp_release_info:
-                body = self._yt_dlp_release_info.get('body', '')
+                body = self._yt_dlp_release_info.get('body') or ''
                 # 截取前 1000 个字符，避免太长
                 if len(body) > 1000:
                     body = body[:1000] + "\n..."
-                return body
+                return body or "暂无更新说明"
             
             # 如果没有缓存，重新获取
             response = requests.get(self.yt_dlp_api_url)
             response.raise_for_status()
             release_info = response.json()
-            body = release_info.get('body', '')
+            body = release_info.get('body') or ''
             if len(body) > 1000:
                 body = body[:1000] + "\n..."
-            return body
+            return body or "暂无更新说明"
         except Exception as e:
             self.logger.error(f"获取 yt-dlp Release Notes 失败: {str(e)}")
             return "无法获取更新说明"
@@ -333,19 +366,19 @@ class VersionManager:
         """
         try:
             if hasattr(self, '_ffmpeg_release_info') and self._ffmpeg_release_info:
-                body = self._ffmpeg_release_info.get('body', '')
+                body = self._ffmpeg_release_info.get('body') or ''
                 if len(body) > 1000:
                     body = body[:1000] + "\n..."
-                return body
+                return body or "暂无更新说明"
             
             # 如果没有缓存，重新获取
             response = requests.get(self.ffmpeg_api_url)
             response.raise_for_status()
             release_info = response.json()
-            body = release_info.get('body', '')
+            body = release_info.get('body') or ''
             if len(body) > 1000:
                 body = body[:1000] + "\n..."
-            return body
+            return body or "暂无更新说明"
         except Exception as e:
             self.logger.error(f"获取 ffmpeg Release Notes 失败: {str(e)}")
             return "无法获取更新说明"
@@ -387,8 +420,9 @@ class VersionManager:
                 return "未安装"
             
             total_size = 0
-            for file in ['ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe']:
-                file_path = os.path.join(self.ffmpeg_dir, file)
+            ext = '.exe' if IS_WINDOWS else ''
+            for name in [f'ffmpeg{ext}', f'ffprobe{ext}', f'ffplay{ext}']:
+                file_path = os.path.join(self.ffmpeg_dir, name)
                 if os.path.exists(file_path):
                     total_size += os.path.getsize(file_path)
             
@@ -431,29 +465,10 @@ class VersionManager:
             latest_version = release_info['tag_name'].replace('n', '')  # 移除 'n' 前缀
             self.logger.info(f"ffmpeg 最新版本: {latest_version}")
             
-            # 查找 Windows 64位 静态版本下载 URL
-            download_url = ""
-            self.logger.info("开始查找下载链接...")
-            
-            # 记录所有可用的资源
-            for asset in release_info['assets']:
-                self.logger.info(f"检查资源: {asset['name']}")
-                # 优先选择 win64-gpl 静态版本
-                if 'win64-gpl' in asset['name'] and 'shared' not in asset['name'] and 'zip' in asset['name']:
-                    download_url = asset['browser_download_url']
-                    self.logger.info(f"找到匹配的下载链接: {download_url}")
-                    break
-            
-            # 如果没有找到合适的链接，尝试其他版本
+            # 查找对应平台的 FFmpeg 下载 URL
+            download_url = self._get_ffmpeg_download_url(release_info)
             if not download_url:
-                for asset in release_info['assets']:
-                    if 'win64' in asset['name'] and 'gpl' in asset['name'] and 'zip' in asset['name']:
-                        download_url = asset['browser_download_url']
-                        self.logger.info(f"使用备用下载链接: {download_url}")
-                        break
-            
-            if not download_url:
-                error_msg = "未找到适合的下載鏈接"
+                error_msg = "未找到适合当前平台的 FFmpeg 下载链接"
                 self.logger.error(error_msg)
                 return False, latest_version, error_msg
             
@@ -462,13 +477,35 @@ class VersionManager:
                 self.logger.info(f"ffmpeg 未安装，需要下载: {latest_version}")
                 return True, latest_version, download_url
             
-            # 比較版本（簡單比較，實際上應該更複雜）
-            if latest_version != current_version:
-                self.logger.info(f"发现 ffmpeg 新版本: {latest_version}")
-                return True, latest_version, download_url
-            else:
-                self.logger.info("ffmpeg 已是最新版本")
-                return False, latest_version, "已是最新版本"
+            # BtbN/FFmpeg-Builds 的 tag_name 始终为 "latest"（滚动发布），
+            # 通过比较 GitHub Release 的 published_at 日期判断是否有更新
+            remote_published_at = release_info.get('published_at', '')
+            self.logger.info(f"ffmpeg 远端发布日期: {remote_published_at}")
+            
+            if remote_published_at:
+                from src.utils.config import ConfigManager
+                config = ConfigManager()
+                local_published_at = config.get('ffmpeg_last_published_at', '')
+                self.logger.info(f"ffmpeg 本地记录发布日期: {local_published_at or '未记录'}")
+                
+                if local_published_at and remote_published_at > local_published_at:
+                    self.logger.info(f"发现 ffmpeg 新版本（远端更新）: {remote_published_at}")
+                    # 保存远端发布日期供下载完成后更新
+                    self._ffmpeg_remote_published_at = remote_published_at
+                    return True, latest_version, download_url
+                elif not local_published_at:
+                    # 首次检查，没有本地记录，视为已是最新
+                    self.logger.info("首次检查 ffmpeg 发布日期，保存远端日期，视为已是最新版")
+                    config.set('ffmpeg_last_published_at', remote_published_at)
+                    config.save_config()
+                    return False, latest_version, "已是最新版本"
+                else:
+                    self.logger.info("ffmpeg 已是最新版本（日期一致）")
+                    return False, latest_version, "已是最新版本"
+            
+            # 无法获取发布日期时，本地已安装一律视为最新版
+            self.logger.info("ffmpeg 已安装，无法获取发布日期，视为已是最新版")
+            return False, latest_version, "已是最新版本"
         except Exception as e:
             error_msg = f"检查更新时发生错误: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
@@ -547,7 +584,13 @@ class VersionManager:
             
             shutil.move(temp_file, self.yt_dlp_path)
             self.logger.info(f"安装新文件: {self.yt_dlp_path}")
-            
+
+            # Unix 需要赋予可执行权限
+            if not IS_WINDOWS:
+                import stat
+                os.chmod(self.yt_dlp_path,
+                         os.stat(self.yt_dlp_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
             # 获取新版本
             success, version = self.get_yt_dlp_version()
             
@@ -602,9 +645,12 @@ class VersionManager:
             progress_callback(self.update_progress, self.update_status)
         
         try:
+            # 根据平台确定压缩包后缀
+            archive_ext = '.zip' if IS_WINDOWS or IS_MACOS else '.tar.xz'
+
             # 創建臨時目錄
             temp_dir = tempfile.mkdtemp(prefix='ffmpeg_update_')
-            zip_file = os.path.join(temp_dir, 'ffmpeg.zip')
+            zip_file = os.path.join(temp_dir, f'ffmpeg{archive_ext}')
             self.logger.info(f"创建临时目录: {temp_dir}")
             
             # 下载文件 - 使用重试机制和超时
@@ -638,28 +684,39 @@ class VersionManager:
             
             extract_dir = os.path.join(temp_dir, 'extract')
             os.makedirs(extract_dir, exist_ok=True)
-            
-            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-            
+
+            if archive_ext == '.zip':
+                with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+            else:
+                import tarfile
+                with tarfile.open(zip_file, 'r:xz') as tar_ref:
+                    tar_ref.extractall(extract_dir)
+
             self.logger.info("ffmpeg 解压完成")
-            
-            # 查找 ffmpeg.exe, ffprobe.exe 和 ffplay.exe
+
+            # 查找 ffmpeg / ffprobe / ffplay 可执行文件
             ffmpeg_exe = None
             ffprobe_exe = None
             ffplay_exe = None
-            
+
+            if IS_WINDOWS:
+                targets = ('ffmpeg.exe', 'ffprobe.exe', 'ffplay.exe')
+            else:
+                targets = ('ffmpeg', 'ffprobe', 'ffplay')
+
             for root, dirs, files in os.walk(extract_dir):
                 for file in files:
-                    if file.lower() == 'ffmpeg.exe':
+                    fl = file.lower()
+                    if fl == targets[0]:
                         ffmpeg_exe = os.path.join(root, file)
-                    elif file.lower() == 'ffprobe.exe':
+                    elif fl == targets[1]:
                         ffprobe_exe = os.path.join(root, file)
-                    elif file.lower() == 'ffplay.exe':
+                    elif fl == targets[2]:
                         ffplay_exe = os.path.join(root, file)
-            
+
             if not ffmpeg_exe:
-                error_msg = "在解压后的文件中未找到 ffmpeg.exe"
+                error_msg = f"在解压后的文件中未找到 {targets[0]}"
                 self.logger.error(error_msg)
                 raise Exception(error_msg)
             
@@ -670,38 +727,27 @@ class VersionManager:
             
             # 确保目标目录存在
             os.makedirs(self.ffmpeg_dir, exist_ok=True)
-            
-            # 备份和更新 ffmpeg.exe
-            if os.path.exists(self.ffmpeg_path):
-                backup_file = f"{self.ffmpeg_path}.bak"
-                if os.path.exists(backup_file):
-                    os.remove(backup_file)
-                os.rename(self.ffmpeg_path, backup_file)
-                self.logger.info(f"备份原文件: {backup_file}")
-            shutil.copy2(ffmpeg_exe, self.ffmpeg_path)
-            self.logger.info(f"安装新文件: {self.ffmpeg_path}")
-            
-            # 备份和更新 ffprobe.exe
-            ffprobe_path = os.path.join(self.ffmpeg_dir, 'ffprobe.exe')
+
+            ext = '.exe' if IS_WINDOWS else ''
+
+            def _install(src, dest_name):
+                dest = os.path.join(self.ffmpeg_dir, dest_name)
+                if os.path.exists(dest):
+                    bak = f"{dest}.bak"
+                    if os.path.exists(bak):
+                        os.remove(bak)
+                    os.rename(dest, bak)
+                shutil.copy2(src, dest)
+                if not IS_WINDOWS:
+                    import stat
+                    os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                self.logger.info(f"安装新文件: {dest}")
+
+            _install(ffmpeg_exe, f'ffmpeg{ext}')
             if ffprobe_exe:
-                if os.path.exists(ffprobe_path):
-                    backup_file = f"{ffprobe_path}.bak"
-                    if os.path.exists(backup_file):
-                        os.remove(backup_file)
-                    os.rename(ffprobe_path, backup_file)
-                shutil.copy2(ffprobe_exe, ffprobe_path)
-                self.logger.info(f"安装新文件: {ffprobe_path}")
-            
-            # 备份和更新 ffplay.exe
-            ffplay_path = os.path.join(self.ffmpeg_dir, 'ffplay.exe')
+                _install(ffprobe_exe, f'ffprobe{ext}')
             if ffplay_exe:
-                if os.path.exists(ffplay_path):
-                    backup_file = f"{ffplay_path}.bak"
-                    if os.path.exists(backup_file):
-                        os.remove(backup_file)
-                    os.rename(ffplay_path, backup_file)
-                shutil.copy2(ffplay_exe, ffplay_path)
-                self.logger.info(f"安装新文件: {ffplay_path}")
+                _install(ffplay_exe, f'ffplay{ext}')
             
             # 清理臨時文件
             self.update_status = "正在清理临时文件..."
@@ -723,6 +769,16 @@ class VersionManager:
             
             if success:
                 self.logger.info(f"ffmpeg 更新成功 - 新版本: {version}")
+                # 更新成功后，将远端发布日期写入 config，供下次检查比较
+                if hasattr(self, '_ffmpeg_remote_published_at') and self._ffmpeg_remote_published_at:
+                    try:
+                        from src.utils.config import ConfigManager
+                        config = ConfigManager()
+                        config.set('ffmpeg_last_published_at', self._ffmpeg_remote_published_at)
+                        config.save_config()
+                        self.logger.info(f"已记录 ffmpeg 发布日期: {self._ffmpeg_remote_published_at}")
+                    except Exception as e:
+                        self.logger.warning(f"记录 ffmpeg 发布日期失败: {e}")
                 return True, version
             else:
                 error_msg = "更新成功但无法获取新版本号"

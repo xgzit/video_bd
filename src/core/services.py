@@ -1,5 +1,5 @@
 """
-YouTube Downloader 服务定位器模块
+youtobe_bd 服务定位器模块
 统一管理核心服务实例，实现依赖注入
 """
 import threading

@@ -1,5 +1,5 @@
 """
-YouTube Downloader 代理设置标签页模块
+youtobe_bd 代理设置标签页模块
 负责创建和管理代理设置界面
 """
 import os

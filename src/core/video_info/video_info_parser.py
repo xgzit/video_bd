@@ -88,7 +88,15 @@ class VideoInfoParser:
         # - https://www.youtube.com/channel/CHANNEL_ID
         # - https://www.youtube.com/@USERNAME
         # - https://www.youtube.com/@USERNAME/videos
-        return '/channel/' in url or '/@' in url
+        #
+        # 排除单个视频URL，如 TikTok:
+        # - https://www.tiktok.com/@user/video/123456  ← 单个视频，不是频道
+        if '/@' in url:
+            # TikTok / Instagram 等：/@user/video/ID 是单个视频
+            if '/video/' in url or '/reel/' in url or '/p/' in url:
+                return False
+            return True
+        return '/channel/' in url
     
     def get_playlist_videos(self, url: str, use_cookies: bool = False, 
                            cookies_file: str = None, proxy_url: str = None) -> List[Dict]:
@@ -104,6 +112,11 @@ class VideoInfoParser:
         Returns:
             视频信息列表，每个包含 url, title, duration 等基本信息
         """
+        # 尝试使用 90 分钟（1.5 小时）短效缓存
+        cached_data = self.cache.load_from_cache(url, max_age_hours=1.5)
+        if cached_data is not None:
+            return cached_data
+            
         import subprocess
         
         command = [
@@ -137,12 +150,9 @@ class VideoInfoParser:
                         video_data = json.loads(line)
                         # 构建完整的视频URL
                         video_id = video_data.get('id', '')
-                        video_url = video_data.get('url', '')
-                        
-                        # 如果没有完整URL，根据ID构建
-                        if not video_url and video_id:
-                            video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        
+                        video_url = (video_data.get('webpage_url')
+                                     or video_data.get('url', ''))
+
                         if video_url:
                             videos.append({
                                 'url': video_url,
@@ -153,9 +163,12 @@ class VideoInfoParser:
                             })
                     except json.JSONDecodeError:
                         continue
-            
+
+            if videos:
+                # 解析成功且列表非空，加入缓存
+                self.cache.save_to_cache(url, videos)
             return videos
-            
+
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr if hasattr(e, 'stderr') and e.stderr else str(e)
             raise Exception(f"获取播放列表失败：{error_msg[:200]}")
@@ -176,6 +189,11 @@ class VideoInfoParser:
         Returns:
             视频信息列表，每个包含 url, title, duration 等基本信息
         """
+        # 尝试使用 90 分钟（1.5 小时）短效缓存
+        cached_data = self.cache.load_from_cache(url, max_age_hours=1.5)
+        if cached_data is not None:
+            return cached_data
+            
         import subprocess
         
         command = [
@@ -209,12 +227,9 @@ class VideoInfoParser:
                         video_data = json.loads(line)
                         # 构建完整的视频URL
                         video_id = video_data.get('id', '')
-                        video_url = video_data.get('url', '')
-                        
-                        # 如果没有完整URL，根据ID构建
-                        if not video_url and video_id:
-                            video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        
+                        video_url = (video_data.get('webpage_url')
+                                     or video_data.get('url', ''))
+
                         if video_url:
                             videos.append({
                                 'url': video_url,
@@ -225,9 +240,12 @@ class VideoInfoParser:
                             })
                     except json.JSONDecodeError:
                         continue
-            
+
+            if videos:
+                # 解析成功且列表非空，加入缓存
+                self.cache.save_to_cache(url, videos)
             return videos
-            
+
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr if hasattr(e, 'stderr') and e.stderr else str(e)
             raise Exception(f"获取频道视频失败：{error_msg[:200]}")

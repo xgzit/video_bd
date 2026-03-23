@@ -1,5 +1,5 @@
 """
-YouTube Downloader 系统托盘模块
+youtobe_bd 系统托盘模块
 提供系统托盘图标和菜单功能
 """
 import os
@@ -74,7 +74,7 @@ class SystemTrayManager(QObject):
             ))
         
         # 设置提示文字
-        self._tray_icon.setToolTip("YouTube Downloader")
+        self._tray_icon.setToolTip("youtobe_bd")
         
         # 创建菜单
         self._create_menu()
@@ -206,7 +206,7 @@ class SystemTrayManager(QObject):
             "下载完成",
             f"{title[:50]} 已下载完成"
         )
-        self.set_tooltip("YouTube Downloader")
+        self.set_tooltip("youtobe_bd")
     
     def _on_download_failed(self, event):
         """处理下载失败事件"""
@@ -218,7 +218,7 @@ class SystemTrayManager(QObject):
             f"{title[:30]}: {error[:50]}",
             icon=QSystemTrayIcon.Warning
         )
-        self.set_tooltip("YouTube Downloader")
+        self.set_tooltip("youtobe_bd")
     
     def show_notification(
         self, 

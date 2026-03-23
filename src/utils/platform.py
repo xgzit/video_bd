@@ -1,5 +1,5 @@
 """
-YouTube Downloader 跨平台工具模块
+youtobe_bd 跨平台工具模块
 负责处理跨平台兼容性和统一的子进程调用
 """
 import os
@@ -26,11 +26,11 @@ def get_app_data_dir() -> Path:
     """
     if IS_WINDOWS:
         base_dir = os.environ.get('APPDATA', '')
-        return Path(base_dir) / 'YouTubeDownloader'
+        return Path(base_dir) / 'video_bd'
     elif IS_MACOS:
-        return Path.home() / 'Library' / 'Application Support' / 'YouTubeDownloader'
+        return Path.home() / 'Library' / 'Application Support' / 'video_bd'
     else:
-        return Path.home() / '.youtube_downloader'
+        return Path.home() / '.video_bd'
 
 
 def get_logs_dir() -> Path:

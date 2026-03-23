@@ -1,5 +1,5 @@
 """
-YouTube Downloader 下载历史记录模块
+youtobe_bd 下载历史记录模块
 提供下载历史的记录、查询和管理功能
 """
 import os

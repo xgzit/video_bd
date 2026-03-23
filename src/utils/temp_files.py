@@ -1,5 +1,5 @@
 """
-YouTube Downloader 临时文件管理模块
+youtobe_bd 临时文件管理模块
 统一管理临时文件的创建和清理
 """
 import os

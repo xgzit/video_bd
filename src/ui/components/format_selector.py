@@ -1,5 +1,5 @@
 """
-YouTube Downloader 格式选择组件
+youtobe_bd 格式选择组件
 提供视频和音频格式选择功能
 """
 from typing import Optional, List, Dict, Tuple

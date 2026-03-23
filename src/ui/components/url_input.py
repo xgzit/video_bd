@@ -1,5 +1,5 @@
 """
-YouTube Downloader URL 输入组件
+youtobe_bd URL 输入组件
 提供 URL 输入和验证功能
 """
 import re
@@ -37,7 +37,8 @@ class UrlInputWidget(QWidget):
         
         # URL 输入框
         self.url_input = QTextEdit()
-        self.url_input.setPlaceholderText("在此输入 YouTube 视频链接")
+        self.url_input.setAcceptRichText(False)
+        self.url_input.setPlaceholderText("在此输入视频链接（支持 YouTube、TikTok、Twitter、Instagram 等 1000+ 网站）")
         self.url_input.setMinimumHeight(80)
         self.url_input.setMaximumHeight(120)
         group_layout.addWidget(self.url_input)
@@ -89,12 +90,24 @@ class UrlInputWidget(QWidget):
         """获取输入的 URL（清理后）"""
         text = self.url_input.toPlainText().strip()
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return lines[0] if lines else ""
+        if not lines:
+            return ""
+        url = lines[0]
+        if not url.startswith('http://') and not url.startswith('https://'):
+            url = 'https://' + url
+        return url
     
     def get_urls(self) -> list:
         """获取所有输入的 URL"""
         text = self.url_input.toPlainText().strip()
-        return [line.strip() for line in text.splitlines() if line.strip()]
+        urls = []
+        for line in text.splitlines():
+            url = line.strip()
+            if url:
+                if not url.startswith('http://') and not url.startswith('https://'):
+                    url = 'https://' + url
+                urls.append(url)
+        return urls
     
     def set_url(self, url: str):
         """设置 URL"""
@@ -141,18 +154,7 @@ class UrlInputWidget(QWidget):
         # 检查是否以 http(s) 开头
         if not re.match(r'https?://', url):
             return False, "请输入有效的链接，应以 http:// 或 https:// 开头"
-        
-        # 检查是否是 YouTube 链接
-        youtube_regex = re.compile(
-            r'^(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+$'
-        )
-        if not youtube_regex.match(url):
-            return False, "请输入有效的 YouTube 视频链接"
-        
-        # 检查是否包含视频 ID
-        if 'watch?v=' not in url and 'youtu.be/' not in url and '/shorts/' not in url:
-            return False, "链接格式不正确，似乎不是一个有效的 YouTube 视频链接"
-        
+
         return True, ""
     
     def is_playlist_url(self, url: str = None) -> bool:
