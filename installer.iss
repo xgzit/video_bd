@@ -45,7 +45,7 @@ RestartApplications=no
 RestartIfNeededByRun=no
 
 [Languages]
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "resources\ChineseSimplified.isl"
 
 [Tasks]
 ; 桌面快捷方式：默认勾选
